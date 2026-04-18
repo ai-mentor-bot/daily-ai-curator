@@ -1,0 +1,17 @@
+{
+  "name": "daily-ai-curator-hackathon-v2",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Daily AI curator with thinking-based scoring and monthly learning loop",
+  "scripts": {
+    "start": "node daily-ai-curator.js",
+    "daily": "node daily-ai-curator.js",
+    "monthly": "node monthly-learning-loop.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "latest",
+    "@supabase/supabase-js": "latest",
+    "node-fetch": "latest"
+  }
+}
