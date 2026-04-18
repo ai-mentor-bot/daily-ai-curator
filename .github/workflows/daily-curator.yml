@@ -1,0 +1,39 @@
+# リポジトリ「ルート」に置くこと（files_unzipped の中では動きません）
+# コードは files_unzipped/ にあるので working-directory を指定
+# JST 毎日 07:00 相当: UTC 22:00
+name: Daily AI Curator
+
+on:
+  schedule:
+    - cron: "0 22 * * *"
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: files_unzipped
+
+jobs:
+  curator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run daily curator
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          LINE_MESSAGING_API_TOKEN: ${{ secrets.LINE_MESSAGING_API_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+        run: node -e "import('./daily-ai-curator.js').then(m => m.runCuratorWithHackathonTechniques())"
