@@ -1,0 +1,65 @@
+# リポジトリ「ルート」に置くこと（files_unzipped の中では動きません）
+# コードは files_unzipped/ にあるので working-directory を指定
+# JST 毎日 07:00 相当: UTC 22:00
+name: Daily AI Curator
+
+on:
+  schedule:
+    - cron: "0 22 * * *"
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: files_unzipped
+
+jobs:
+  curator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify repo layout (root)
+        working-directory: ${{ github.workspace }}
+        run: |
+          ls -la
+          test -d files_unzipped || (echo "ERROR: files_unzipped folder not found at repo root" && exit 1)
+          ls -la files_unzipped
+
+      - name: Preflight secrets (values are hidden; only checks empty)
+        working-directory: ${{ github.workspace }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          LINE_MESSAGING_API_TOKEN: ${{ secrets.LINE_MESSAGING_API_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then echo "Missing GitHub Secret: ANTHROPIC_API_KEY"; exit 1; fi
+          if [ -z "$SUPABASE_URL" ]; then echo "Missing GitHub Secret: SUPABASE_URL"; exit 1; fi
+          if [ -z "$SUPABASE_KEY" ]; then echo "Missing GitHub Secret: SUPABASE_KEY"; exit 1; fi
+          if [ -z "$LINE_MESSAGING_API_TOKEN" ]; then echo "Missing GitHub Secret: LINE_MESSAGING_API_TOKEN"; exit 1; fi
+          if [ -z "$LINE_USER_ID" ]; then echo "Missing GitHub Secret: LINE_USER_ID"; exit 1; fi
+          echo "Preflight OK"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run daily curator
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          LINE_MESSAGING_API_TOKEN: ${{ secrets.LINE_MESSAGING_API_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          # 初回は thinking 無効 + 安定モデル（通ったら Secrets で上書き可）
+          ANTHROPIC_MODEL: "claude-3-5-sonnet-20241022"
+          ANTHROPIC_ENABLE_THINKING: "0"
+        run: node -e "import('./daily-ai-curator.js').then(m => m.runCuratorWithHackathonTechniques())"
