@@ -15,6 +15,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 import fetch from "node-fetch";
 import { createClient } from "@supabase/supabase-js";
+import {
+  buildAnthropicMessageParams,
+  getAnthropicModel,
+  shouldEnableThinking,
+} from "./anthropic-config.js";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -105,13 +110,9 @@ async function optimizeKeywordWithThinking(baseKeyword, category) {
    * 実装案件の可能性を +30% 向上させる
    */
   try {
-    const response = await anthropic.messages.create({
-      model: "claude-opus-4-20250805",
+    const response = await anthropic.messages.create(buildAnthropicMessageParams({
       max_tokens: 2000,
-      thinking: {
-        type: "enabled",
-        budget_tokens: 1500,
-      },
+      thinking_budget_tokens: 1500,
       messages: [
         {
           role: "user",
@@ -144,7 +145,7 @@ async function optimizeKeywordWithThinking(baseKeyword, category) {
 `,
         },
       ],
-    });
+    }));
 
     const content = response.content.find((c) => c.type === "text")?.text || "{}";
     const jsonMatch = content.match(/\{[\s\S]*\}/);
@@ -250,13 +251,9 @@ async function scoreArticleWithHackathonTechniques(article) {
    */
 
   try {
-    const response = await anthropic.messages.create({
-      model: "claude-opus-4-20250805",
+    const response = await anthropic.messages.create(buildAnthropicMessageParams({
       max_tokens: 16000,
-      thinking: {
-        type: "enabled",
-        budget_tokens: 8000, // 詳細な思考プロセス
-      },
+      thinking_budget_tokens: 8000, // 詳細な思考プロセス
       messages: [
         {
           role: "user",
@@ -272,7 +269,7 @@ ${SCORING_CRITERIA}
 `,
         },
       ],
-    });
+    }));
 
     // thinking プロセスの抽出（学習用）
     const thinkingBlock = response.content.find((c) => c.type === "thinking");
@@ -334,7 +331,10 @@ async function runCuratorWithHackathonTechniques() {
   console.log(
     `🚀 Daily AI Curator v2 (Hackathon) Started at ${new Date().toISOString()}`
   );
-  console.log(`📊 Running with thinking-enabled scoring...\n`);
+  const anthropicModel = getAnthropicModel();
+  console.log(
+    `📊 Running with model ${anthropicModel} (thinking: ${shouldEnableThinking(anthropicModel) ? "enabled" : "disabled"})...\n`
+  );
 
   try {
     // ステップ1：キーワード最適化（Phase 2実装）
@@ -360,8 +360,7 @@ async function runCuratorWithHackathonTechniques() {
 
     for (const kw of optimizedKeywords.slice(0, 5)) {
       // コスト削減：最初の5つのみ実行
-      const response = await anthropic.messages.create({
-        model: "claude-opus-4-20250805",
+      const response = await anthropic.messages.create(buildAnthropicMessageParams({
         max_tokens: 2000,
         messages: [
           {
@@ -371,7 +370,7 @@ async function runCuratorWithHackathonTechniques() {
 Return ONLY JSON array: [{"title":"...", "url":"...", "summary":"...", "source":"...", "publish_date":"2025-XX-XX"}]`,
           },
         ],
-      });
+      }));
 
       const content = response.content[0].text;
       const jsonMatch = content.match(/\[[\s\S]*\]/);

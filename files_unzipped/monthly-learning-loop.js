@@ -14,6 +14,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { createClient } from "@supabase/supabase-js";
 import fetch from "node-fetch";
+import {
+  buildAnthropicMessageParams,
+  getAnthropicModel,
+  shouldEnableThinking,
+} from "./anthropic-config.js";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -31,6 +36,10 @@ const supabase = createClient(
 async function runMonthlyLearning() {
   console.log(
     `\n🧠 Monthly Learning Loop Started at ${new Date().toISOString()}\n`
+  );
+  const anthropicModel = getAnthropicModel();
+  console.log(
+    `Using model ${anthropicModel} (thinking: ${shouldEnableThinking(anthropicModel) ? "enabled" : "disabled"})\n`
   );
 
   try {
@@ -137,13 +146,9 @@ async function analyzeThinkingPatterns(monthlyData) {
   }
 
   try {
-    const response = await anthropic.messages.create({
-      model: "claude-opus-4-20250805",
+    const response = await anthropic.messages.create(buildAnthropicMessageParams({
       max_tokens: 3000,
-      thinking: {
-        type: "enabled",
-        budget_tokens: 2000,
-      },
+      thinking_budget_tokens: 2000,
       messages: [
         {
           role: "user",
@@ -191,7 +196,7 @@ Kotaroの事業判定に最も重要な要素を特定し、
 `,
         },
       ],
-    });
+    }));
 
     const content = response.content.find((c) => c.type === "text")?.text || "{}";
     const jsonMatch = content.match(/\{[\s\S]*\}/);
