@@ -15,15 +15,33 @@
 import Anthropic from "@anthropic-ai/sdk";
 import fetch from "node-fetch";
 import { createClient } from "@supabase/supabase-js";
+import {
+  buildAnthropicRequest,
+  getAnthropicModeDescription,
+} from "./anthropic-config.js";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
-);
+let supabaseClient;
+
+function getSupabaseClient() {
+  if (supabaseClient) return supabaseClient;
+
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_KEY;
+
+  if (!supabaseUrl || !/^https?:\/\//i.test(supabaseUrl)) {
+    throw new Error("Invalid SUPABASE_URL: must be a valid HTTP or HTTPS URL");
+  }
+  if (!supabaseKey) {
+    throw new Error("Missing SUPABASE_KEY");
+  }
+
+  supabaseClient = createClient(supabaseUrl, supabaseKey);
+  return supabaseClient;
+}
 
 // ============================================
 // 強化版：検索キーワード戦略 + AI最適化
@@ -105,17 +123,14 @@ async function optimizeKeywordWithThinking(baseKeyword, category) {
    * 実装案件の可能性を +30% 向上させる
    */
   try {
-    const response = await anthropic.messages.create({
-      model: "claude-opus-4-20250805",
-      max_tokens: 2000,
-      thinking: {
-        type: "enabled",
-        budget_tokens: 1500,
-      },
-      messages: [
-        {
-          role: "user",
-          content: `
+    const response = await anthropic.messages.create(
+      buildAnthropicRequest({
+        maxTokens: 2000,
+        thinkingBudget: 1500,
+        messages: [
+          {
+            role: "user",
+            content: `
 キーワード最適化タスク（Phase 2）
 
 【入力】
@@ -142,9 +157,10 @@ async function optimizeKeywordWithThinking(baseKeyword, category) {
   "expected_relevance_improvement": 0.X
 }
 `,
-        },
-      ],
-    });
+          },
+        ],
+      })
+    );
 
     const content = response.content.find((c) => c.type === "text")?.text || "{}";
     const jsonMatch = content.match(/\{[\s\S]*\}/);
@@ -250,17 +266,14 @@ async function scoreArticleWithHackathonTechniques(article) {
    */
 
   try {
-    const response = await anthropic.messages.create({
-      model: "claude-opus-4-20250805",
-      max_tokens: 16000,
-      thinking: {
-        type: "enabled",
-        budget_tokens: 8000, // 詳細な思考プロセス
-      },
-      messages: [
-        {
-          role: "user",
-          content: `
+    const response = await anthropic.messages.create(
+      buildAnthropicRequest({
+        maxTokens: 16000,
+        thinkingBudget: 8000,
+        messages: [
+          {
+            role: "user",
+            content: `
 【記事スコアリングタスク】
 
 記事タイトル: "${article.title}"
@@ -270,9 +283,10 @@ async function scoreArticleWithHackathonTechniques(article) {
 
 ${SCORING_CRITERIA}
 `,
-        },
-      ],
-    });
+          },
+        ],
+      })
+    );
 
     // thinking プロセスの抽出（学習用）
     const thinkingBlock = response.content.find((c) => c.type === "thinking");
@@ -334,7 +348,7 @@ async function runCuratorWithHackathonTechniques() {
   console.log(
     `🚀 Daily AI Curator v2 (Hackathon) Started at ${new Date().toISOString()}`
   );
-  console.log(`📊 Running with thinking-enabled scoring...\n`);
+  console.log(`📊 Running with ${getAnthropicModeDescription()} scoring...\n`);
 
   try {
     // ステップ1：キーワード最適化（Phase 2実装）
@@ -360,18 +374,19 @@ async function runCuratorWithHackathonTechniques() {
 
     for (const kw of optimizedKeywords.slice(0, 5)) {
       // コスト削減：最初の5つのみ実行
-      const response = await anthropic.messages.create({
-        model: "claude-opus-4-20250805",
-        max_tokens: 2000,
-        messages: [
-          {
-            role: "user",
-            content: `Find 3 recent (2024-2025) articles about: "${kw.optimization.optimized_primary || kw.keyword}"
+      const response = await anthropic.messages.create(
+        buildAnthropicRequest({
+          maxTokens: 2000,
+          messages: [
+            {
+              role: "user",
+              content: `Find 3 recent (2024-2025) articles about: "${kw.optimization.optimized_primary || kw.keyword}"
             
 Return ONLY JSON array: [{"title":"...", "url":"...", "summary":"...", "source":"...", "publish_date":"2025-XX-XX"}]`,
-          },
-        ],
-      });
+            },
+          ],
+        })
+      );
 
       const content = response.content[0].text;
       const jsonMatch = content.match(/\[[\s\S]*\]/);
@@ -408,54 +423,7 @@ Return ONLY JSON array: [{"title":"...", "url":"...", "summary":"...", "source":
     );
 
     // ステップ4：Supabase に保存（thinking含む）
-    if (scoredArticles.length > 0) {
-      console.log("💾 Saving to Supabase with thinking data...");
-
-      // 新しいテーブル構造：thinking データを保持
-      const { error } = await supabase
-        .from("daily_ai_curations_v2")
-        .insert(
-          scoredArticles.map((article) => ({
-            title: article.article_title,
-            url: article.article_url,
-            category: article.category,
-            total_score: article.total_score,
-            breakdown: article.axis_breakdown,
-            confidence: article.confidence,
-            applicable_business: article.applicable_business,
-            risk_factors: article.risk_factors,
-            thinking_summary: article.thinking_summary,
-            thinking_process: article.thinking_process, // 学習用
-            implementation_complexity: article.implementation_complexity,
-            priority: article.priority,
-            saved_at: new Date().toISOString(),
-          }))
-        );
-
-      if (error) {
-        console.error("Supabase error:", error);
-        // v1 テーブルにフォールバック
-        await supabase.from("daily_ai_curations").insert(
-          scoredArticles.map((article) => ({
-            title: article.article_title,
-            url: article.article_url,
-            category: article.category,
-            total_score: article.total_score,
-            breakdown: {
-              adoption: article.axis_breakdown.adoption_score,
-              revenue_speed: article.axis_breakdown.revenue_score,
-              scalability: article.axis_breakdown.scalability_score,
-              stack_compatibility: article.axis_breakdown.compatibility_score,
-            },
-            applicable_business: article.applicable_business,
-            priority: article.priority,
-            saved_at: new Date().toISOString(),
-          }))
-        );
-      } else {
-        console.log("✅ Saved to Supabase v2 (with thinking data)\n");
-      }
-    }
+    await saveScoredArticles(scoredArticles);
 
     // ステップ5：LINE通知（信頼度スコア含む）
     await notifyLineWithConfidence(scoredArticles);
