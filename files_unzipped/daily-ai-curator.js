@@ -438,6 +438,63 @@ Return ONLY JSON array: [{"title":"...", "url":"...", "summary":"...", "source":
   }
 }
 
+async function saveScoredArticles(scoredArticles) {
+  if (scoredArticles.length === 0) return;
+
+  console.log("💾 Saving to Supabase with thinking data...");
+  const supabase = getSupabaseClient();
+
+  // 新しいテーブル構造：thinking データを保持
+  const { error } = await supabase
+    .from("daily_ai_curations_v2")
+    .insert(
+      scoredArticles.map((article) => ({
+        title: article.article_title,
+        url: article.article_url,
+        category: article.category,
+        total_score: article.total_score,
+        breakdown: article.axis_breakdown,
+        confidence: article.confidence,
+        applicable_business: article.applicable_business,
+        risk_factors: article.risk_factors,
+        thinking_summary: article.thinking_summary,
+        thinking_process: article.thinking_process, // 学習用
+        implementation_complexity: article.implementation_complexity,
+        priority: article.priority,
+        saved_at: new Date().toISOString(),
+      }))
+    );
+
+  if (!error) {
+    console.log("✅ Saved to Supabase v2 (with thinking data)\n");
+    return;
+  }
+
+  console.error("Supabase error:", error);
+  // v1 テーブルにフォールバック
+  const { error: fallbackError } = await supabase.from("daily_ai_curations").insert(
+    scoredArticles.map((article) => ({
+      title: article.article_title,
+      url: article.article_url,
+      category: article.category,
+      total_score: article.total_score,
+      breakdown: {
+        adoption: article.axis_breakdown.adoption_score,
+        revenue_speed: article.axis_breakdown.revenue_score,
+        scalability: article.axis_breakdown.scalability_score,
+        stack_compatibility: article.axis_breakdown.compatibility_score,
+      },
+      applicable_business: article.applicable_business,
+      priority: article.priority,
+      saved_at: new Date().toISOString(),
+    }))
+  );
+
+  if (fallbackError) {
+    console.error("Supabase fallback error:", fallbackError);
+  }
+}
+
 // ============================================
 // LINE通知強化版（信頼度スコア + リスク表示）
 // ============================================
