@@ -15,6 +15,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import fetch from "node-fetch";
 import { createClient } from "@supabase/supabase-js";
+import { getAnthropicModel } from "./anthropic-config.js";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -106,7 +107,7 @@ async function optimizeKeywordWithThinking(baseKeyword, category) {
    */
   try {
     const response = await anthropic.messages.create({
-      model: "claude-opus-4-20250805",
+      model: getAnthropicModel(),
       max_tokens: 2000,
       thinking: {
         type: "enabled",
@@ -251,7 +252,7 @@ async function scoreArticleWithHackathonTechniques(article) {
 
   try {
     const response = await anthropic.messages.create({
-      model: "claude-opus-4-20250805",
+      model: getAnthropicModel(),
       max_tokens: 16000,
       thinking: {
         type: "enabled",
@@ -361,7 +362,7 @@ async function runCuratorWithHackathonTechniques() {
     for (const kw of optimizedKeywords.slice(0, 5)) {
       // コスト削減：最初の5つのみ実行
       const response = await anthropic.messages.create({
-        model: "claude-opus-4-20250805",
+        model: getAnthropicModel(),
         max_tokens: 2000,
         messages: [
           {
