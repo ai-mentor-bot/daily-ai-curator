@@ -14,6 +14,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { createClient } from "@supabase/supabase-js";
 import fetch from "node-fetch";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -23,6 +25,10 @@ const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 );
+
+function isDirectRun(metaUrl, argvPath = process.argv[1]) {
+  return Boolean(argvPath) && fileURLToPath(metaUrl) === resolve(argvPath);
+}
 
 // ============================================
 // 月次学習実行
@@ -430,8 +436,8 @@ async function notifyLearningError(error) {
 // 実行
 // ============================================
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isDirectRun(import.meta.url)) {
   runMonthlyLearning();
 }
 
-export { runMonthlyLearning };
+export { isDirectRun, runMonthlyLearning };

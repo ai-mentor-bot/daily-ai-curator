@@ -15,6 +15,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import fetch from "node-fetch";
 import { createClient } from "@supabase/supabase-js";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -326,6 +328,34 @@ function extractThinkingSummary(thinkingProcess) {
   return thinkingProcess.substring(0, 300).trim();
 }
 
+function isDirectRun(metaUrl, argvPath = process.argv[1]) {
+  return Boolean(argvPath) && fileURLToPath(metaUrl) === resolve(argvPath);
+}
+
+function extractTextContent(response) {
+  return response?.content?.find((c) => c.type === "text" && typeof c.text === "string")?.text || "";
+}
+
+function parseJsonArrayFromText(text, context) {
+  const jsonMatch = text.match(/\[[\s\S]*\]/);
+  if (!jsonMatch) {
+    console.warn(`No JSON array found in ${context}`);
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(jsonMatch[0]);
+    if (!Array.isArray(parsed)) {
+      console.warn(`Expected JSON array in ${context}`);
+      return [];
+    }
+    return parsed;
+  } catch (parseError) {
+    console.warn(`${context} parse error: ${parseError.message}`);
+    return [];
+  }
+}
+
 // ============================================
 // メイン処理：強化版キュレーター
 // ============================================
@@ -373,21 +403,14 @@ Return ONLY JSON array: [{"title":"...", "url":"...", "summary":"...", "source":
         ],
       });
 
-      const content = response.content[0].text;
-      const jsonMatch = content.match(/\[[\s\S]*\]/);
-      if (jsonMatch) {
-        try {
-          const articles = JSON.parse(jsonMatch[0]);
-          allArticles.push(
-            ...articles.map((a) => ({
-              ...a,
-              searchQuery: kw,
-            }))
-          );
-        } catch (parseError) {
-          console.warn(`Article list parse error: ${parseError.message}`);
-        }
-      }
+      const content = extractTextContent(response);
+      const articles = parseJsonArrayFromText(content, "article search response");
+      allArticles.push(
+        ...articles.map((a) => ({
+          ...a,
+          searchQuery: kw,
+        }))
+      );
     }
 
     console.log(`✅ Found ${allArticles.length} potential articles\n`);
@@ -435,23 +458,27 @@ Return ONLY JSON array: [{"title":"...", "url":"...", "summary":"...", "source":
       if (error) {
         console.error("Supabase error:", error);
         // v1 テーブルにフォールバック
-        await supabase.from("daily_ai_curations").insert(
+        const { error: fallbackError } = await supabase.from("daily_ai_curations").insert(
           scoredArticles.map((article) => ({
             title: article.article_title,
             url: article.article_url,
             category: article.category,
             total_score: article.total_score,
             breakdown: {
-              adoption: article.axis_breakdown.adoption_score,
-              revenue_speed: article.axis_breakdown.revenue_score,
-              scalability: article.axis_breakdown.scalability_score,
-              stack_compatibility: article.axis_breakdown.compatibility_score,
+              adoption: article.axis_breakdown?.adoption_score ?? 0,
+              revenue_speed: article.axis_breakdown?.revenue_score ?? 0,
+              scalability: article.axis_breakdown?.scalability_score ?? 0,
+              stack_compatibility: article.axis_breakdown?.compatibility_score ?? 0,
             },
             applicable_business: article.applicable_business,
             priority: article.priority,
             saved_at: new Date().toISOString(),
           }))
         );
+        if (fallbackError) {
+          throw new Error(`Supabase fallback insert failed: ${fallbackError.message}`);
+        }
+        console.log("Saved to Supabase v1 fallback\n");
       } else {
         console.log("✅ Saved to Supabase v2 (with thinking data)\n");
       }
@@ -475,11 +502,12 @@ Return ONLY JSON array: [{"title":"...", "url":"...", "summary":"...", "source":
 // ============================================
 
 async function notifyLineWithConfidence(articles) {
+  await sendLineMessage(formatLineMessageWithConfidence(articles));
+}
+
+function formatLineMessageWithConfidence(articles) {
   if (!articles.length) {
-    await sendLineMessage(
-      "📊 朝のAI情報キュレーション\n\n本日は80点以上の高価値記事がありませんでした。"
-    );
-    return;
+    return "📊 朝のAI情報キュレーション\n\n本日は80点以上の高価値記事がありませんでした。";
   }
 
   const topArticles = articles
@@ -491,22 +519,27 @@ async function notifyLineWithConfidence(articles) {
   message += `🧠 Thinking-enabled精密判定モード\n\n`;
 
   topArticles.forEach((article, i) => {
+    const confidence = Number.isFinite(article.confidence) ? article.confidence : 0;
+    const applicableBusiness = Array.isArray(article.applicable_business)
+      ? article.applicable_business
+      : [];
+    const riskFactors = Array.isArray(article.risk_factors) ? article.risk_factors : [];
     const confidenceEmoji =
-      article.confidence > 0.9 ? "🔴" : article.confidence > 0.75 ? "🟡" : "🟢";
+      confidence > 0.9 ? "🔴" : confidence > 0.75 ? "🟡" : "🟢";
 
     message += `${i + 1}. 【${article.category}】\n`;
     message += `📝 ${article.article_title}\n`;
     message += `⭐ スコア: ${article.total_score}/100\n`;
-    message += `${confidenceEmoji} 確信度: ${(article.confidence * 100).toFixed(0)}%\n`;
-    message += `🎯 対象: ${article.applicable_business.join("・")}\n`;
-    message += `⚠️ リスク: ${article.risk_factors.length > 0 ? article.risk_factors[0] : "なし"}\n`;
+    message += `${confidenceEmoji} 確信度: ${(confidence * 100).toFixed(0)}%\n`;
+    message += `🎯 対象: ${applicableBusiness.length > 0 ? applicableBusiness.join("・") : "未指定"}\n`;
+    message += `⚠️ リスク: ${riskFactors.length > 0 ? riskFactors[0] : "なし"}\n`;
     message += `💪 難度: ${article.implementation_complexity}\n`;
     message += `🔗 ${article.article_url}\n\n`;
   });
 
   message += `\n💭 詳細分析はダッシュボードで確認`;
 
-  await sendLineMessage(message);
+  return message;
 }
 
 async function sendLineMessage(message) {
@@ -573,7 +606,8 @@ function logMonthlyLearningOpportunities(articles) {
 function getMostCommonRisk(articles) {
   const riskCounts = {};
   articles.forEach((a) => {
-    a.risk_factors.forEach((risk) => {
+    const riskFactors = Array.isArray(a.risk_factors) ? a.risk_factors : [];
+    riskFactors.forEach((risk) => {
       riskCounts[risk] = (riskCounts[risk] || 0) + 1;
     });
   });
@@ -585,8 +619,14 @@ function getMostCommonRisk(articles) {
 // 実行
 // ============================================
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isDirectRun(import.meta.url)) {
   runCuratorWithHackathonTechniques();
 }
 
-export { runCuratorWithHackathonTechniques };
+export {
+  extractTextContent,
+  formatLineMessageWithConfidence,
+  isDirectRun,
+  parseJsonArrayFromText,
+  runCuratorWithHackathonTechniques,
+};
