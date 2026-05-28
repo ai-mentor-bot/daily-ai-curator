@@ -14,6 +14,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { createClient } from "@supabase/supabase-js";
 import fetch from "node-fetch";
+import { buildAnthropicMessageParams } from "./anthropic-request-config.js";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -137,13 +138,9 @@ async function analyzeThinkingPatterns(monthlyData) {
   }
 
   try {
-    const response = await anthropic.messages.create({
-      model: "claude-opus-4-20250805",
-      max_tokens: 3000,
-      thinking: {
-        type: "enabled",
-        budget_tokens: 2000,
-      },
+    const response = await anthropic.messages.create(buildAnthropicMessageParams({
+      maxTokens: 3000,
+      thinkingBudgetTokens: 2000,
       messages: [
         {
           role: "user",
@@ -191,7 +188,7 @@ Kotaroの事業判定に最も重要な要素を特定し、
 `,
         },
       ],
-    });
+    }));
 
     const content = response.content.find((c) => c.type === "text")?.text || "{}";
     const jsonMatch = content.match(/\{[\s\S]*\}/);
