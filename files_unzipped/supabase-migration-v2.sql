@@ -65,10 +65,10 @@ DROP POLICY IF EXISTS "allow_select_v2" ON daily_ai_curations_v2;
 CREATE POLICY "allow_select_v2" ON daily_ai_curations_v2
   FOR SELECT USING (true);
 
--- 認証済みユーザーが挿入可能
+-- 書き込みはサーバー側の定期ジョブ（service role key）だけが行う。
+-- INSERT ポリシーを作成しないことで、anon/authenticated client からの
+-- 任意データ挿入を RLS で拒否する。
 DROP POLICY IF EXISTS "allow_insert_v2" ON daily_ai_curations_v2;
-CREATE POLICY "allow_insert_v2" ON daily_ai_curations_v2
-  FOR INSERT WITH CHECK (true);
 
 -- ============================================
 -- 月次学習レポートテーブル
@@ -88,8 +88,6 @@ DROP POLICY IF EXISTS "allow_select_monthly_reports" ON monthly_learning_reports
 CREATE POLICY "allow_select_monthly_reports" ON monthly_learning_reports
   FOR SELECT USING (true);
 DROP POLICY IF EXISTS "allow_insert_monthly_reports" ON monthly_learning_reports;
-CREATE POLICY "allow_insert_monthly_reports" ON monthly_learning_reports
-  FOR INSERT WITH CHECK (true);
 
 -- ============================================
 -- ビュー：月次学習分析用
