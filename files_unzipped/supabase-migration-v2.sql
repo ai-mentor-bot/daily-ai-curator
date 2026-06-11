@@ -60,15 +60,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_unique_title_per_day
 
 ALTER TABLE daily_ai_curations_v2 ENABLE ROW LEVEL SECURITY;
 
--- すべてのユーザーが読み取り可能
+-- サーバーサイドジョブのみ読み取り可能
 DROP POLICY IF EXISTS "allow_select_v2" ON daily_ai_curations_v2;
 CREATE POLICY "allow_select_v2" ON daily_ai_curations_v2
-  FOR SELECT USING (true);
+  FOR SELECT TO service_role
+  USING (auth.role() = 'service_role');
 
--- 認証済みユーザーが挿入可能
+-- サーバーサイドジョブのみ挿入可能（anon/authenticated によるデータ汚染を防止）
 DROP POLICY IF EXISTS "allow_insert_v2" ON daily_ai_curations_v2;
 CREATE POLICY "allow_insert_v2" ON daily_ai_curations_v2
-  FOR INSERT WITH CHECK (true);
+  FOR INSERT TO service_role
+  WITH CHECK (auth.role() = 'service_role');
 
 -- ============================================
 -- 月次学習レポートテーブル
@@ -86,10 +88,12 @@ CREATE INDEX IF NOT EXISTS idx_monthly_reports_month ON monthly_learning_reports
 ALTER TABLE monthly_learning_reports ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "allow_select_monthly_reports" ON monthly_learning_reports;
 CREATE POLICY "allow_select_monthly_reports" ON monthly_learning_reports
-  FOR SELECT USING (true);
+  FOR SELECT TO service_role
+  USING (auth.role() = 'service_role');
 DROP POLICY IF EXISTS "allow_insert_monthly_reports" ON monthly_learning_reports;
 CREATE POLICY "allow_insert_monthly_reports" ON monthly_learning_reports
-  FOR INSERT WITH CHECK (true);
+  FOR INSERT TO service_role
+  WITH CHECK (auth.role() = 'service_role');
 
 -- ============================================
 -- ビュー：月次学習分析用
