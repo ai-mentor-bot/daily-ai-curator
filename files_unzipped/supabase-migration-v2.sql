@@ -60,15 +60,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_unique_title_per_day
 
 ALTER TABLE daily_ai_curations_v2 ENABLE ROW LEVEL SECURITY;
 
--- すべてのユーザーが読み取り可能
-DROP POLICY IF EXISTS "allow_select_v2" ON daily_ai_curations_v2;
-CREATE POLICY "allow_select_v2" ON daily_ai_curations_v2
-  FOR SELECT USING (true);
+REVOKE ALL ON daily_ai_curations_v2 FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON daily_ai_curations_v2 TO service_role;
 
--- 認証済みユーザーが挿入可能
+-- 内部バッチのみアクセス可能（service_role）
+DROP POLICY IF EXISTS "allow_select_v2" ON daily_ai_curations_v2;
 DROP POLICY IF EXISTS "allow_insert_v2" ON daily_ai_curations_v2;
-CREATE POLICY "allow_insert_v2" ON daily_ai_curations_v2
-  FOR INSERT WITH CHECK (true);
+DROP POLICY IF EXISTS "service_role_all_v2" ON daily_ai_curations_v2;
+CREATE POLICY "service_role_all_v2" ON daily_ai_curations_v2
+  FOR ALL TO service_role
+  USING (auth.role() = 'service_role')
+  WITH CHECK (auth.role() = 'service_role');
 
 -- ============================================
 -- 月次学習レポートテーブル
@@ -84,18 +86,23 @@ CREATE TABLE IF NOT EXISTS monthly_learning_reports (
 CREATE INDEX IF NOT EXISTS idx_monthly_reports_month ON monthly_learning_reports(month);
 
 ALTER TABLE monthly_learning_reports ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON monthly_learning_reports FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON monthly_learning_reports TO service_role;
+
 DROP POLICY IF EXISTS "allow_select_monthly_reports" ON monthly_learning_reports;
-CREATE POLICY "allow_select_monthly_reports" ON monthly_learning_reports
-  FOR SELECT USING (true);
 DROP POLICY IF EXISTS "allow_insert_monthly_reports" ON monthly_learning_reports;
-CREATE POLICY "allow_insert_monthly_reports" ON monthly_learning_reports
-  FOR INSERT WITH CHECK (true);
+DROP POLICY IF EXISTS "service_role_all_monthly_reports" ON monthly_learning_reports;
+CREATE POLICY "service_role_all_monthly_reports" ON monthly_learning_reports
+  FOR ALL TO service_role
+  USING (auth.role() = 'service_role')
+  WITH CHECK (auth.role() = 'service_role');
 
 -- ============================================
 -- ビュー：月次学習分析用
 -- ============================================
 
-CREATE OR REPLACE VIEW monthly_learning_summary AS
+CREATE OR REPLACE VIEW monthly_learning_summary
+WITH (security_invoker = true) AS
 SELECT 
   category,
   DATE_TRUNC('month', saved_at) as month,
@@ -112,7 +119,8 @@ ORDER BY month DESC, avg_score DESC;
 -- ビュー：リスク因子分析
 -- ============================================
 
-CREATE OR REPLACE VIEW risk_factor_analysis AS
+CREATE OR REPLACE VIEW risk_factor_analysis
+WITH (security_invoker = true) AS
 SELECT 
   unnest(risk_factors) as risk_factor,
   COUNT(*) as occurrences,
@@ -126,7 +134,8 @@ ORDER BY occurrences DESC;
 -- ビュー：実装難度別分析
 -- ============================================
 
-CREATE OR REPLACE VIEW implementation_analysis AS
+CREATE OR REPLACE VIEW implementation_analysis
+WITH (security_invoker = true) AS
 SELECT 
   implementation_complexity,
   COUNT(*) as count,
@@ -141,7 +150,8 @@ ORDER BY avg_score DESC;
 -- ビュー：信頼度スコア分布（品質管理用）
 -- ============================================
 
-CREATE OR REPLACE VIEW confidence_distribution AS
+CREATE OR REPLACE VIEW confidence_distribution
+WITH (security_invoker = true) AS
 SELECT 
   CASE 
     WHEN confidence >= 0.9 THEN '90%以上（極高）'
@@ -160,6 +170,15 @@ GROUP BY
     ELSE 3
   END
 ORDER BY count DESC;
+
+REVOKE ALL ON monthly_learning_summary FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON risk_factor_analysis FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON implementation_analysis FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON confidence_distribution FROM PUBLIC, anon, authenticated;
+GRANT SELECT ON monthly_learning_summary TO service_role;
+GRANT SELECT ON risk_factor_analysis TO service_role;
+GRANT SELECT ON implementation_analysis TO service_role;
+GRANT SELECT ON confidence_distribution TO service_role;
 
 -- ============================================
 -- 旧テーブル（v1）からのマイグレーション手順
