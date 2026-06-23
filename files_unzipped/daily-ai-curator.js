@@ -144,6 +144,14 @@ function isUniqueViolation(error) {
   return /23505|duplicate key|unique constraint/i.test(errorText);
 }
 
+function toSupabaseError(error, prefix) {
+  const message =
+    error?.message || error?.details || error?.hint || JSON.stringify(error);
+  const wrappedError = new Error(`${prefix}: ${message}`);
+  wrappedError.cause = error;
+  return wrappedError;
+}
+
 async function saveScoredArticles(scoredArticles, client = supabase) {
   const savedAt = new Date().toISOString();
   const results = {
@@ -177,7 +185,7 @@ async function saveScoredArticles(scoredArticles, client = supabase) {
 
     if (fallbackError) {
       console.error("Supabase legacy fallback error:", fallbackError);
-      throw fallbackError;
+      throw toSupabaseError(fallbackError, "Supabase legacy fallback failed");
     }
 
     results.insertedLegacy++;
