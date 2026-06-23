@@ -60,15 +60,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_unique_title_per_day
 
 ALTER TABLE daily_ai_curations_v2 ENABLE ROW LEVEL SECURITY;
 
--- すべてのユーザーが読み取り可能
+-- Backend cron jobs use the service role key; do not expose raw thinking data publicly.
 DROP POLICY IF EXISTS "allow_select_v2" ON daily_ai_curations_v2;
-CREATE POLICY "allow_select_v2" ON daily_ai_curations_v2
-  FOR SELECT USING (true);
-
--- 認証済みユーザーが挿入可能
 DROP POLICY IF EXISTS "allow_insert_v2" ON daily_ai_curations_v2;
-CREATE POLICY "allow_insert_v2" ON daily_ai_curations_v2
-  FOR INSERT WITH CHECK (true);
+DROP POLICY IF EXISTS "service_role_all_v2" ON daily_ai_curations_v2;
+CREATE POLICY "service_role_all_v2" ON daily_ai_curations_v2
+  FOR ALL TO service_role
+  USING (true)
+  WITH CHECK (true);
+
+REVOKE ALL ON TABLE daily_ai_curations_v2 FROM anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE daily_ai_curations_v2 TO service_role;
 
 -- ============================================
 -- 月次学習レポートテーブル
@@ -85,11 +87,15 @@ CREATE INDEX IF NOT EXISTS idx_monthly_reports_month ON monthly_learning_reports
 
 ALTER TABLE monthly_learning_reports ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "allow_select_monthly_reports" ON monthly_learning_reports;
-CREATE POLICY "allow_select_monthly_reports" ON monthly_learning_reports
-  FOR SELECT USING (true);
 DROP POLICY IF EXISTS "allow_insert_monthly_reports" ON monthly_learning_reports;
-CREATE POLICY "allow_insert_monthly_reports" ON monthly_learning_reports
-  FOR INSERT WITH CHECK (true);
+DROP POLICY IF EXISTS "service_role_all_monthly_reports" ON monthly_learning_reports;
+CREATE POLICY "service_role_all_monthly_reports" ON monthly_learning_reports
+  FOR ALL TO service_role
+  USING (true)
+  WITH CHECK (true);
+
+REVOKE ALL ON TABLE monthly_learning_reports FROM anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE monthly_learning_reports TO service_role;
 
 -- ============================================
 -- ビュー：月次学習分析用
@@ -143,23 +149,37 @@ ORDER BY avg_score DESC;
 
 CREATE OR REPLACE VIEW confidence_distribution AS
 SELECT 
-  CASE 
-    WHEN confidence >= 0.9 THEN '90%以上（極高）'
-    WHEN confidence >= 0.75 THEN '75-90%（高）'
-    WHEN confidence >= 0.6 THEN '60-75%（中）'
-    ELSE '60%未満（低）'
-  END as confidence_bracket,
+  confidence_bracket,
   COUNT(*) as count,
   AVG(total_score) as avg_score
-FROM daily_ai_curations_v2
-GROUP BY 
-  CASE 
-    WHEN confidence >= 0.9 THEN 0
-    WHEN confidence >= 0.75 THEN 1
-    WHEN confidence >= 0.6 THEN 2
-    ELSE 3
-  END
-ORDER BY count DESC;
+FROM (
+  SELECT
+    total_score,
+    CASE 
+      WHEN confidence >= 0.9 THEN '90%以上（極高）'
+      WHEN confidence >= 0.75 THEN '75-90%（高）'
+      WHEN confidence >= 0.6 THEN '60-75%（中）'
+      ELSE '60%未満（低）'
+    END as confidence_bracket,
+    CASE 
+      WHEN confidence >= 0.9 THEN 0
+      WHEN confidence >= 0.75 THEN 1
+      WHEN confidence >= 0.6 THEN 2
+      ELSE 3
+    END as sort_order
+  FROM daily_ai_curations_v2
+) bucketed
+GROUP BY confidence_bracket, sort_order
+ORDER BY sort_order;
+
+REVOKE ALL ON monthly_learning_summary FROM anon, authenticated;
+REVOKE ALL ON risk_factor_analysis FROM anon, authenticated;
+REVOKE ALL ON implementation_analysis FROM anon, authenticated;
+REVOKE ALL ON confidence_distribution FROM anon, authenticated;
+GRANT SELECT ON monthly_learning_summary TO service_role;
+GRANT SELECT ON risk_factor_analysis TO service_role;
+GRANT SELECT ON implementation_analysis TO service_role;
+GRANT SELECT ON confidence_distribution TO service_role;
 
 -- ============================================
 -- 旧テーブル（v1）からのマイグレーション手順
