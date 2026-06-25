@@ -326,6 +326,137 @@ function extractThinkingSummary(thinkingProcess) {
   return thinkingProcess.substring(0, 300).trim();
 }
 
+function asArray(value) {
+  if (Array.isArray(value)) return value;
+  if (value === undefined || value === null || value === "") return [];
+  return [String(value)];
+}
+
+function normalizeScoreForStorage(article) {
+  const axisBreakdown = article.axis_breakdown || {};
+  const totalScore = Number(article.total_score) || 0;
+
+  return {
+    ...article,
+    total_score: totalScore,
+    confidence: Number(article.confidence) || 0,
+    axis_breakdown: {
+      ...axisBreakdown,
+      adoption_score: Number(axisBreakdown.adoption_score) || 0,
+      revenue_score: Number(axisBreakdown.revenue_score) || 0,
+      scalability_score: Number(axisBreakdown.scalability_score) || 0,
+      compatibility_score: Number(axisBreakdown.compatibility_score) || 0,
+    },
+    applicable_business: asArray(article.applicable_business),
+    risk_factors: asArray(article.risk_factors),
+    implementation_complexity: ["LOW", "MEDIUM", "HIGH"].includes(
+      article.implementation_complexity
+    )
+      ? article.implementation_complexity
+      : "MEDIUM",
+    priority: ["HIGH", "MEDIUM", "LOW"].includes(article.priority)
+      ? article.priority
+      : totalScore >= 85
+        ? "HIGH"
+        : totalScore >= 80
+          ? "MEDIUM"
+          : "LOW",
+  };
+}
+
+function toV2CurationRow(article, savedAt) {
+  const normalized = normalizeScoreForStorage(article);
+
+  return {
+    title: normalized.article_title,
+    url: normalized.article_url,
+    category: normalized.category,
+    total_score: normalized.total_score,
+    breakdown: normalized.axis_breakdown,
+    confidence: normalized.confidence,
+    applicable_business: normalized.applicable_business,
+    risk_factors: normalized.risk_factors,
+    thinking_summary: normalized.thinking_summary,
+    thinking_process: normalized.thinking_process, // 学習用
+    implementation_complexity: normalized.implementation_complexity,
+    priority: normalized.priority,
+    saved_at: savedAt,
+  };
+}
+
+function toV1CurationRow(article, savedAt) {
+  const normalized = normalizeScoreForStorage(article);
+
+  return {
+    title: normalized.article_title,
+    url: normalized.article_url,
+    category: normalized.category,
+    total_score: normalized.total_score,
+    breakdown: {
+      adoption: normalized.axis_breakdown.adoption_score,
+      revenue_speed: normalized.axis_breakdown.revenue_score,
+      scalability: normalized.axis_breakdown.scalability_score,
+      stack_compatibility: normalized.axis_breakdown.compatibility_score,
+    },
+    applicable_business: normalized.applicable_business,
+    priority: normalized.priority,
+    saved_at: savedAt,
+  };
+}
+
+function isDuplicateError(error) {
+  return (
+    error?.code === "23505" ||
+    /duplicate key|already exists|unique constraint/i.test(error?.message || "")
+  );
+}
+
+async function saveScoredArticles(scoredArticles, client = supabase) {
+  const savedAt = new Date().toISOString();
+  const result = {
+    savedToV2: 0,
+    savedToV1: 0,
+    skippedDuplicates: 0,
+  };
+
+  for (const article of scoredArticles) {
+    const v2Row = toV2CurationRow(article, savedAt);
+    const { error: v2Error } = await client
+      .from("daily_ai_curations_v2")
+      .insert([v2Row]);
+
+    if (!v2Error) {
+      result.savedToV2++;
+      continue;
+    }
+
+    if (isDuplicateError(v2Error)) {
+      result.skippedDuplicates++;
+      console.warn(`Duplicate curation skipped: ${v2Row.url || v2Row.title}`);
+      continue;
+    }
+
+    console.error("Supabase v2 error:", v2Error);
+    const { error: v1Error } = await client
+      .from("daily_ai_curations")
+      .insert([toV1CurationRow(article, savedAt)]);
+
+    if (v1Error) {
+      throw new Error(
+        `Supabase save failed for "${v2Row.title}": v2=${v2Error.message}; v1=${v1Error.message}`
+      );
+    }
+
+    result.savedToV1++;
+  }
+
+  console.log(
+    `✅ Supabase save complete: v2=${result.savedToV2}, v1_fallback=${result.savedToV1}, duplicates=${result.skippedDuplicates}\n`
+  );
+
+  return result;
+}
+
 // ============================================
 // メイン処理：強化版キュレーター
 // ============================================
@@ -410,51 +541,7 @@ Return ONLY JSON array: [{"title":"...", "url":"...", "summary":"...", "source":
     // ステップ4：Supabase に保存（thinking含む）
     if (scoredArticles.length > 0) {
       console.log("💾 Saving to Supabase with thinking data...");
-
-      // 新しいテーブル構造：thinking データを保持
-      const { error } = await supabase
-        .from("daily_ai_curations_v2")
-        .insert(
-          scoredArticles.map((article) => ({
-            title: article.article_title,
-            url: article.article_url,
-            category: article.category,
-            total_score: article.total_score,
-            breakdown: article.axis_breakdown,
-            confidence: article.confidence,
-            applicable_business: article.applicable_business,
-            risk_factors: article.risk_factors,
-            thinking_summary: article.thinking_summary,
-            thinking_process: article.thinking_process, // 学習用
-            implementation_complexity: article.implementation_complexity,
-            priority: article.priority,
-            saved_at: new Date().toISOString(),
-          }))
-        );
-
-      if (error) {
-        console.error("Supabase error:", error);
-        // v1 テーブルにフォールバック
-        await supabase.from("daily_ai_curations").insert(
-          scoredArticles.map((article) => ({
-            title: article.article_title,
-            url: article.article_url,
-            category: article.category,
-            total_score: article.total_score,
-            breakdown: {
-              adoption: article.axis_breakdown.adoption_score,
-              revenue_speed: article.axis_breakdown.revenue_score,
-              scalability: article.axis_breakdown.scalability_score,
-              stack_compatibility: article.axis_breakdown.compatibility_score,
-            },
-            applicable_business: article.applicable_business,
-            priority: article.priority,
-            saved_at: new Date().toISOString(),
-          }))
-        );
-      } else {
-        console.log("✅ Saved to Supabase v2 (with thinking data)\n");
-      }
+      await saveScoredArticles(scoredArticles);
     }
 
     // ステップ5：LINE通知（信頼度スコア含む）
@@ -483,6 +570,7 @@ async function notifyLineWithConfidence(articles) {
   }
 
   const topArticles = articles
+    .map(normalizeScoreForStorage)
     .sort((a, b) => b.total_score - a.total_score)
     .slice(0, 5);
 
@@ -573,7 +661,7 @@ function logMonthlyLearningOpportunities(articles) {
 function getMostCommonRisk(articles) {
   const riskCounts = {};
   articles.forEach((a) => {
-    a.risk_factors.forEach((risk) => {
+    normalizeScoreForStorage(a).risk_factors.forEach((risk) => {
       riskCounts[risk] = (riskCounts[risk] || 0) + 1;
     });
   });
@@ -589,4 +677,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   runCuratorWithHackathonTechniques();
 }
 
-export { runCuratorWithHackathonTechniques };
+export {
+  runCuratorWithHackathonTechniques,
+  saveScoredArticles,
+  normalizeScoreForStorage,
+};
