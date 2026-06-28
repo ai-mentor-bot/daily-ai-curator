@@ -326,6 +326,114 @@ function extractThinkingSummary(thinkingProcess) {
   return thinkingProcess.substring(0, 300).trim();
 }
 
+function buildV2CurationRow(article, savedAt = new Date().toISOString()) {
+  return {
+    title: article.article_title,
+    url: article.article_url,
+    category: article.category || "Unknown",
+    total_score: article.total_score,
+    breakdown: article.axis_breakdown,
+    confidence: article.confidence,
+    applicable_business: article.applicable_business,
+    risk_factors: article.risk_factors,
+    thinking_summary: article.thinking_summary,
+    thinking_process: article.thinking_process, // 学習用
+    implementation_complexity: article.implementation_complexity,
+    priority: article.priority,
+    saved_at: savedAt,
+  };
+}
+
+function buildLegacyCurationRow(article, savedAt = new Date().toISOString()) {
+  const axisBreakdown = article.axis_breakdown || {};
+
+  return {
+    title: article.article_title,
+    url: article.article_url,
+    category: article.category || "Unknown",
+    total_score: article.total_score,
+    breakdown: {
+      adoption: axisBreakdown.adoption_score,
+      revenue_speed: axisBreakdown.revenue_score,
+      scalability: axisBreakdown.scalability_score,
+      stack_compatibility: axisBreakdown.compatibility_score,
+    },
+    applicable_business: article.applicable_business,
+    priority: article.priority,
+    saved_at: savedAt,
+  };
+}
+
+function isDuplicateSupabaseError(error) {
+  if (!error) return false;
+
+  const errorText = `${error.code || ""} ${error.message || ""} ${error.details || ""}`;
+  return (
+    error.code === "23505" ||
+    /duplicate key|unique constraint|violates unique/i.test(errorText)
+  );
+}
+
+async function saveScoredArticles(supabaseClient, scoredArticles) {
+  let savedCount = 0;
+  let skippedDuplicateCount = 0;
+  const failedSaves = [];
+
+  for (const article of scoredArticles) {
+    const savedAt = new Date().toISOString();
+    const v2Row = buildV2CurationRow(article, savedAt);
+    const { error: v2Error } = await supabaseClient
+      .from("daily_ai_curations_v2")
+      .insert([v2Row]);
+
+    if (!v2Error) {
+      savedCount++;
+      continue;
+    }
+
+    if (isDuplicateSupabaseError(v2Error)) {
+      skippedDuplicateCount++;
+      console.warn(
+        `Skipping duplicate Supabase curation for "${article.article_title}": ${v2Error.message || v2Error.code}`
+      );
+      continue;
+    }
+
+    console.error("Supabase v2 error:", v2Error);
+    // v1 テーブルにフォールバック。ただし失敗を握りつぶさない。
+    const legacyRow = buildLegacyCurationRow(article, savedAt);
+    const { error: legacyError } = await supabaseClient
+      .from("daily_ai_curations")
+      .insert([legacyRow]);
+
+    if (legacyError) {
+      console.error("Supabase legacy fallback error:", legacyError);
+      failedSaves.push({
+        title: article.article_title,
+        error: legacyError,
+      });
+      continue;
+    }
+
+    savedCount++;
+  }
+
+  if (failedSaves.length > 0) {
+    throw new Error(
+      `Failed to save ${failedSaves.length} scored article(s) to Supabase`
+    );
+  }
+
+  console.log(
+    `✅ Supabase save complete: ${savedCount} saved, ${skippedDuplicateCount} duplicate(s) skipped\n`
+  );
+
+  return {
+    savedCount,
+    skippedDuplicateCount,
+  };
+}
+
 // ============================================
 // メイン処理：強化版キュレーター
 // ============================================
@@ -410,51 +518,7 @@ Return ONLY JSON array: [{"title":"...", "url":"...", "summary":"...", "source":
     // ステップ4：Supabase に保存（thinking含む）
     if (scoredArticles.length > 0) {
       console.log("💾 Saving to Supabase with thinking data...");
-
-      // 新しいテーブル構造：thinking データを保持
-      const { error } = await supabase
-        .from("daily_ai_curations_v2")
-        .insert(
-          scoredArticles.map((article) => ({
-            title: article.article_title,
-            url: article.article_url,
-            category: article.category,
-            total_score: article.total_score,
-            breakdown: article.axis_breakdown,
-            confidence: article.confidence,
-            applicable_business: article.applicable_business,
-            risk_factors: article.risk_factors,
-            thinking_summary: article.thinking_summary,
-            thinking_process: article.thinking_process, // 学習用
-            implementation_complexity: article.implementation_complexity,
-            priority: article.priority,
-            saved_at: new Date().toISOString(),
-          }))
-        );
-
-      if (error) {
-        console.error("Supabase error:", error);
-        // v1 テーブルにフォールバック
-        await supabase.from("daily_ai_curations").insert(
-          scoredArticles.map((article) => ({
-            title: article.article_title,
-            url: article.article_url,
-            category: article.category,
-            total_score: article.total_score,
-            breakdown: {
-              adoption: article.axis_breakdown.adoption_score,
-              revenue_speed: article.axis_breakdown.revenue_score,
-              scalability: article.axis_breakdown.scalability_score,
-              stack_compatibility: article.axis_breakdown.compatibility_score,
-            },
-            applicable_business: article.applicable_business,
-            priority: article.priority,
-            saved_at: new Date().toISOString(),
-          }))
-        );
-      } else {
-        console.log("✅ Saved to Supabase v2 (with thinking data)\n");
-      }
+      await saveScoredArticles(supabase, scoredArticles);
     }
 
     // ステップ5：LINE通知（信頼度スコア含む）
@@ -589,4 +653,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   runCuratorWithHackathonTechniques();
 }
 
-export { runCuratorWithHackathonTechniques };
+export {
+  runCuratorWithHackathonTechniques,
+  saveScoredArticles,
+  isDuplicateSupabaseError,
+};
