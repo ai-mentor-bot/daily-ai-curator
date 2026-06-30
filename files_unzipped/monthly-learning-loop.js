@@ -24,6 +24,35 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
+const DEFAULT_ANTHROPIC_MODEL = "claude-3-5-sonnet-20241022";
+
+function getAnthropicModel() {
+  return process.env.ANTHROPIC_MODEL || DEFAULT_ANTHROPIC_MODEL;
+}
+
+function isThinkingEnabled() {
+  return ["1", "true", "yes"].includes(
+    (process.env.ANTHROPIC_ENABLE_THINKING || "").toLowerCase()
+  );
+}
+
+function buildAnthropicRequest({ maxTokens, thinkingBudgetTokens, messages }) {
+  const request = {
+    model: getAnthropicModel(),
+    max_tokens: maxTokens,
+    messages,
+  };
+
+  if (thinkingBudgetTokens && isThinkingEnabled()) {
+    request.thinking = {
+      type: "enabled",
+      budget_tokens: thinkingBudgetTokens,
+    };
+  }
+
+  return request;
+}
+
 // ============================================
 // 月次学習実行
 // ============================================
@@ -74,7 +103,12 @@ async function runMonthlyLearning() {
     console.log("✅ Monthly learning completed");
   } catch (error) {
     console.error("❌ Learning error:", error);
-    await notifyLearningError(error);
+    try {
+      await notifyLearningError(error);
+    } catch (notifyError) {
+      console.error("Monthly error notification failed:", notifyError);
+    }
+    throw error;
   }
 }
 
@@ -137,13 +171,9 @@ async function analyzeThinkingPatterns(monthlyData) {
   }
 
   try {
-    const response = await anthropic.messages.create({
-      model: "claude-opus-4-20250805",
-      max_tokens: 3000,
-      thinking: {
-        type: "enabled",
-        budget_tokens: 2000,
-      },
+    const response = await anthropic.messages.create(buildAnthropicRequest({
+      maxTokens: 3000,
+      thinkingBudgetTokens: 2000,
       messages: [
         {
           role: "user",
@@ -191,7 +221,7 @@ Kotaroの事業判定に最も重要な要素を特定し、
 `,
         },
       ],
-    });
+    }));
 
     const content = response.content.find((c) => c.type === "text")?.text || "{}";
     const jsonMatch = content.match(/\{[\s\S]*\}/);
@@ -385,7 +415,7 @@ ${recommendations
   if (!lineToken || !lineUserId) return;
 
   try {
-    await fetch("https://api.line.me/v2/bot/message/push", {
+    const response = await fetch("https://api.line.me/v2/bot/message/push", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -396,9 +426,16 @@ ${recommendations
         messages: [{ type: "text", text: message }],
       }),
     });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(`LINE API error ${response.status}: ${body}`);
+    }
+
     console.log("✅ Monthly report notified via LINE");
   } catch (error) {
     console.error("LINE notification error:", error);
+    throw error;
   }
 }
 
@@ -408,7 +445,7 @@ async function notifyLearningError(error) {
 
   if (!lineToken || !lineUserId) return;
 
-  await fetch("https://api.line.me/v2/bot/message/push", {
+  const response = await fetch("https://api.line.me/v2/bot/message/push", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -424,6 +461,11 @@ async function notifyLearningError(error) {
       ],
     }),
   });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`LINE API error ${response.status}: ${body}`);
+  }
 }
 
 // ============================================
@@ -431,7 +473,9 @@ async function notifyLearningError(error) {
 // ============================================
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  runMonthlyLearning();
+  runMonthlyLearning().catch(() => {
+    process.exitCode = 1;
+  });
 }
 
-export { runMonthlyLearning };
+export { buildAnthropicRequest, runMonthlyLearning };
