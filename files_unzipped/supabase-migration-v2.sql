@@ -60,15 +60,25 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_unique_title_per_day
 
 ALTER TABLE daily_ai_curations_v2 ENABLE ROW LEVEL SECURITY;
 
--- すべてのユーザーが読み取り可能
+-- 内部学習データは GitHub Actions/バックエンドの service_role のみアクセス可能
 DROP POLICY IF EXISTS "allow_select_v2" ON daily_ai_curations_v2;
 CREATE POLICY "allow_select_v2" ON daily_ai_curations_v2
-  FOR SELECT USING (true);
+  FOR SELECT TO service_role
+  USING (auth.role() = 'service_role');
 
--- 認証済みユーザーが挿入可能
 DROP POLICY IF EXISTS "allow_insert_v2" ON daily_ai_curations_v2;
 CREATE POLICY "allow_insert_v2" ON daily_ai_curations_v2
-  FOR INSERT WITH CHECK (true);
+  FOR INSERT TO service_role
+  WITH CHECK (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "allow_update_v2" ON daily_ai_curations_v2;
+CREATE POLICY "allow_update_v2" ON daily_ai_curations_v2
+  FOR UPDATE TO service_role
+  USING (auth.role() = 'service_role')
+  WITH CHECK (auth.role() = 'service_role');
+
+REVOKE ALL ON daily_ai_curations_v2 FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT, UPDATE ON daily_ai_curations_v2 TO service_role;
 
 -- ============================================
 -- 月次学習レポートテーブル
@@ -86,10 +96,15 @@ CREATE INDEX IF NOT EXISTS idx_monthly_reports_month ON monthly_learning_reports
 ALTER TABLE monthly_learning_reports ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "allow_select_monthly_reports" ON monthly_learning_reports;
 CREATE POLICY "allow_select_monthly_reports" ON monthly_learning_reports
-  FOR SELECT USING (true);
+  FOR SELECT TO service_role
+  USING (auth.role() = 'service_role');
 DROP POLICY IF EXISTS "allow_insert_monthly_reports" ON monthly_learning_reports;
 CREATE POLICY "allow_insert_monthly_reports" ON monthly_learning_reports
-  FOR INSERT WITH CHECK (true);
+  FOR INSERT TO service_role
+  WITH CHECK (auth.role() = 'service_role');
+
+REVOKE ALL ON monthly_learning_reports FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT ON monthly_learning_reports TO service_role;
 
 -- ============================================
 -- ビュー：月次学習分析用
@@ -161,6 +176,15 @@ GROUP BY
   END
 ORDER BY count DESC;
 
+REVOKE ALL ON monthly_learning_summary FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON risk_factor_analysis FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON implementation_analysis FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON confidence_distribution FROM PUBLIC, anon, authenticated;
+GRANT SELECT ON monthly_learning_summary TO service_role;
+GRANT SELECT ON risk_factor_analysis TO service_role;
+GRANT SELECT ON implementation_analysis TO service_role;
+GRANT SELECT ON confidence_distribution TO service_role;
+
 -- ============================================
 -- 旧テーブル（v1）からのマイグレーション手順
 -- ============================================
@@ -184,7 +208,7 @@ SELECT
   saved_at
 FROM daily_ai_curations
 WHERE saved_at > NOW() - INTERVAL '30 days'
-ON CONFLICT (url, saved_at) DO NOTHING;
+ON CONFLICT (url) DO NOTHING;
 */
 
 -- ============================================
