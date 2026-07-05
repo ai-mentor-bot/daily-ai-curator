@@ -139,11 +139,17 @@ test("Supabase migration restricts internal tables and views to service_role", (
   for (const table of ["daily_ai_curations_v2", "monthly_learning_reports"]) {
     assert.match(
       sql,
-      new RegExp(`CREATE POLICY "service_role_select[\\s\\S]*ON ${table}[\\s\\S]*FOR SELECT TO service_role USING \\\\(true\\\\)`, "i")
+      new RegExp(
+        `CREATE POLICY "service_role_select[\\s\\S]*ON ${table}[\\s\\S]*FOR SELECT TO service_role USING \\(true\\)`,
+        "i"
+      )
     );
     assert.match(
       sql,
-      new RegExp(`CREATE POLICY "service_role_insert[\\s\\S]*ON ${table}[\\s\\S]*FOR INSERT TO service_role WITH CHECK \\\\(true\\\\)`, "i")
+      new RegExp(
+        `CREATE POLICY "service_role_insert[\\s\\S]*ON ${table}[\\s\\S]*FOR INSERT TO service_role WITH CHECK \\(true\\)`,
+        "i"
+      )
     );
     assert.match(
       sql,
