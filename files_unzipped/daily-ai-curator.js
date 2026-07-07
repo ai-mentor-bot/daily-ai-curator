@@ -25,6 +25,125 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
+const POSTGRES_UNIQUE_VIOLATION = "23505";
+
+function asStringArray(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item));
+  }
+  if (value == null) {
+    return [];
+  }
+  return [String(value)];
+}
+
+function normalizeScoredArticle(score) {
+  if (!score) return null;
+
+  return {
+    ...score,
+    axis_breakdown: score.axis_breakdown || {},
+    applicable_business: asStringArray(score.applicable_business),
+    risk_factors: asStringArray(score.risk_factors),
+    total_score: Number(score.total_score) || 0,
+    confidence: Number(score.confidence) || 0,
+  };
+}
+
+function isDuplicateError(error) {
+  return (
+    error?.code === POSTGRES_UNIQUE_VIOLATION ||
+    /duplicate key value violates unique constraint/i.test(error?.message || "")
+  );
+}
+
+function buildV2Row(article) {
+  return {
+    title: article.article_title,
+    url: article.article_url,
+    category: article.category,
+    total_score: article.total_score,
+    breakdown: article.axis_breakdown,
+    confidence: article.confidence,
+    applicable_business: article.applicable_business,
+    risk_factors: article.risk_factors,
+    thinking_summary: article.thinking_summary,
+    thinking_process: article.thinking_process,
+    implementation_complexity: article.implementation_complexity,
+    priority: article.priority,
+    saved_at: new Date().toISOString(),
+  };
+}
+
+function buildLegacyRow(article) {
+  return {
+    title: article.article_title,
+    url: article.article_url,
+    category: article.category,
+    total_score: article.total_score,
+    breakdown: {
+      adoption: article.axis_breakdown.adoption_score,
+      revenue_speed: article.axis_breakdown.revenue_score,
+      scalability: article.axis_breakdown.scalability_score,
+      stack_compatibility: article.axis_breakdown.compatibility_score,
+    },
+    applicable_business: article.applicable_business,
+    priority: article.priority,
+    saved_at: new Date().toISOString(),
+  };
+}
+
+async function saveScoredArticles(scoredArticles, client = supabase) {
+  const stats = {
+    savedV2: 0,
+    savedLegacy: 0,
+    duplicatesSkipped: 0,
+  };
+
+  for (const rawArticle of scoredArticles) {
+    const article = normalizeScoredArticle(rawArticle);
+    if (!article) continue;
+
+    const { error } = await client
+      .from("daily_ai_curations_v2")
+      .upsert(buildV2Row(article), {
+        onConflict: "url",
+        ignoreDuplicates: true,
+      });
+
+    if (!error) {
+      stats.savedV2 += 1;
+      continue;
+    }
+
+    if (isDuplicateError(error)) {
+      console.warn(`Skipping duplicate article: ${article.article_url || article.article_title}`);
+      stats.duplicatesSkipped += 1;
+      continue;
+    }
+
+    console.error("Supabase v2 error:", error);
+    const { error: legacyError } = await client
+      .from("daily_ai_curations")
+      .insert([buildLegacyRow(article)]);
+
+    if (legacyError) {
+      throw new Error(
+        `Failed to save "${article.article_title}" to Supabase v2 (${error.message}) ` +
+          `or legacy table (${legacyError.message})`
+      );
+    }
+
+    stats.savedLegacy += 1;
+  }
+
+  console.log(
+    `✅ Supabase save complete: ${stats.savedV2} v2, ${stats.savedLegacy} legacy, ` +
+      `${stats.duplicatesSkipped} duplicates skipped\n`
+  );
+  return stats;
+}
+
 // ============================================
 // 強化版：検索キーワード戦略 + AI最適化
 // ============================================
@@ -398,8 +517,9 @@ Return ONLY JSON array: [{"title":"...", "url":"...", "summary":"...", "source":
 
     for (const article of allArticles) {
       const score = await scoreArticleWithHackathonTechniques(article);
-      if (score && score.total_score >= 80) {
-        scoredArticles.push(score);
+      const normalizedScore = normalizeScoredArticle(score);
+      if (normalizedScore && normalizedScore.total_score >= 80) {
+        scoredArticles.push(normalizedScore);
       }
     }
 
@@ -411,50 +531,7 @@ Return ONLY JSON array: [{"title":"...", "url":"...", "summary":"...", "source":
     if (scoredArticles.length > 0) {
       console.log("💾 Saving to Supabase with thinking data...");
 
-      // 新しいテーブル構造：thinking データを保持
-      const { error } = await supabase
-        .from("daily_ai_curations_v2")
-        .insert(
-          scoredArticles.map((article) => ({
-            title: article.article_title,
-            url: article.article_url,
-            category: article.category,
-            total_score: article.total_score,
-            breakdown: article.axis_breakdown,
-            confidence: article.confidence,
-            applicable_business: article.applicable_business,
-            risk_factors: article.risk_factors,
-            thinking_summary: article.thinking_summary,
-            thinking_process: article.thinking_process, // 学習用
-            implementation_complexity: article.implementation_complexity,
-            priority: article.priority,
-            saved_at: new Date().toISOString(),
-          }))
-        );
-
-      if (error) {
-        console.error("Supabase error:", error);
-        // v1 テーブルにフォールバック
-        await supabase.from("daily_ai_curations").insert(
-          scoredArticles.map((article) => ({
-            title: article.article_title,
-            url: article.article_url,
-            category: article.category,
-            total_score: article.total_score,
-            breakdown: {
-              adoption: article.axis_breakdown.adoption_score,
-              revenue_speed: article.axis_breakdown.revenue_score,
-              scalability: article.axis_breakdown.scalability_score,
-              stack_compatibility: article.axis_breakdown.compatibility_score,
-            },
-            applicable_business: article.applicable_business,
-            priority: article.priority,
-            saved_at: new Date().toISOString(),
-          }))
-        );
-      } else {
-        console.log("✅ Saved to Supabase v2 (with thinking data)\n");
-      }
+      await saveScoredArticles(scoredArticles);
     }
 
     // ステップ5：LINE通知（信頼度スコア含む）
@@ -466,7 +543,12 @@ Return ONLY JSON array: [{"title":"...", "url":"...", "summary":"...", "source":
     logMonthlyLearningOpportunities(scoredArticles);
   } catch (error) {
     console.error("❌ Error:", error);
-    await notifyLineError(error);
+    try {
+      await notifyLineError(error);
+    } catch (notificationError) {
+      console.error("Failed to send LINE error notification:", notificationError);
+    }
+    throw error;
   }
 }
 
@@ -519,7 +601,7 @@ async function sendLineMessage(message) {
   }
 
   try {
-    await fetch("https://api.line.me/v2/bot/message/push", {
+    const response = await fetch("https://api.line.me/v2/bot/message/push", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -530,9 +612,13 @@ async function sendLineMessage(message) {
         messages: [{ type: "text", text: message }],
       }),
     });
+    if (!response.ok) {
+      throw new Error(`LINE push failed with ${response.status}: ${await response.text()}`);
+    }
     console.log("✅ LINE notification sent (with confidence)");
   } catch (error) {
     console.error("LINE error:", error);
+    throw error;
   }
 }
 
@@ -589,4 +675,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   runCuratorWithHackathonTechniques();
 }
 
-export { runCuratorWithHackathonTechniques };
+export {
+  normalizeScoredArticle,
+  runCuratorWithHackathonTechniques,
+  saveScoredArticles,
+};
