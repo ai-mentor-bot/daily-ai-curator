@@ -17,7 +17,7 @@ import fetch from "node-fetch";
 import { createClient } from "@supabase/supabase-js";
 
 const ANTHROPIC_MODEL =
-  process.env.ANTHROPIC_MODEL || "claude-3-5-sonnet-20241022";
+  process.env.ANTHROPIC_MODEL || "claude-sonnet-4-20250514";
 const ENABLE_THINKING = process.env.ANTHROPIC_ENABLE_THINKING === "1";
 
 const anthropic = new Anthropic({

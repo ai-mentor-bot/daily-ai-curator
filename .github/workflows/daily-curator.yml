@@ -58,6 +58,6 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           LINE_MESSAGING_API_TOKEN: ${{ secrets.LINE_MESSAGING_API_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
-          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022' }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514' }}
           ANTHROPIC_ENABLE_THINKING: ${{ vars.ANTHROPIC_ENABLE_THINKING || '0' }}
         run: node --input-type=module -e "const m = await import('./daily-ai-curator.js'); await m.runCuratorWithHackathonTechniques();"
