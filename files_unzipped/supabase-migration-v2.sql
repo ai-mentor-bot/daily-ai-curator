@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS daily_ai_curations_v2 (
   
   -- 基本情報
   title TEXT NOT NULL,
-  url TEXT UNIQUE,
+  url TEXT,
   category TEXT NOT NULL,
   
   -- Hackathon統合スコアリング
@@ -38,8 +38,15 @@ CREATE TABLE IF NOT EXISTS daily_ai_curations_v2 (
   thinking_process TEXT,  -- 全量保存（月次分析用）
   
   -- メタデータ
-  saved_at TIMESTAMP DEFAULT NOW()
+  saved_at TIMESTAMP DEFAULT NOW(),
+  saved_date DATE GENERATED ALWAYS AS (saved_at::date) STORED
 );
+
+ALTER TABLE daily_ai_curations_v2
+  ADD COLUMN IF NOT EXISTS saved_date DATE GENERATED ALWAYS AS (saved_at::date) STORED;
+
+ALTER TABLE daily_ai_curations_v2
+  DROP CONSTRAINT IF EXISTS daily_ai_curations_v2_url_key;
 
 -- ============================================
 -- インデックス（クエリ最適化）
@@ -53,6 +60,8 @@ CREATE INDEX IF NOT EXISTS idx_v2_saved_date ON daily_ai_curations_v2(saved_at D
 CREATE INDEX IF NOT EXISTS idx_v2_complexity ON daily_ai_curations_v2(implementation_complexity);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_unique_title_per_day
   ON daily_ai_curations_v2 (title, ((saved_at::date)));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_unique_url_per_day
+  ON daily_ai_curations_v2 (url, saved_date);
 
 -- ============================================
 -- RLS設定（Row Level Security）
@@ -60,15 +69,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_unique_title_per_day
 
 ALTER TABLE daily_ai_curations_v2 ENABLE ROW LEVEL SECURITY;
 
--- すべてのユーザーが読み取り可能
 DROP POLICY IF EXISTS "allow_select_v2" ON daily_ai_curations_v2;
-CREATE POLICY "allow_select_v2" ON daily_ai_curations_v2
-  FOR SELECT USING (true);
+DROP POLICY IF EXISTS "service_role_select_v2" ON daily_ai_curations_v2;
+CREATE POLICY "service_role_select_v2" ON daily_ai_curations_v2
+  FOR SELECT TO service_role USING (auth.role() = 'service_role');
 
--- 認証済みユーザーが挿入可能
 DROP POLICY IF EXISTS "allow_insert_v2" ON daily_ai_curations_v2;
-CREATE POLICY "allow_insert_v2" ON daily_ai_curations_v2
-  FOR INSERT WITH CHECK (true);
+DROP POLICY IF EXISTS "service_role_insert_v2" ON daily_ai_curations_v2;
+CREATE POLICY "service_role_insert_v2" ON daily_ai_curations_v2
+  FOR INSERT TO service_role WITH CHECK (auth.role() = 'service_role');
+
+REVOKE ALL ON TABLE daily_ai_curations_v2 FROM anon, authenticated;
+GRANT SELECT, INSERT ON TABLE daily_ai_curations_v2 TO service_role;
 
 -- ============================================
 -- 月次学習レポートテーブル
@@ -85,11 +97,16 @@ CREATE INDEX IF NOT EXISTS idx_monthly_reports_month ON monthly_learning_reports
 
 ALTER TABLE monthly_learning_reports ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "allow_select_monthly_reports" ON monthly_learning_reports;
-CREATE POLICY "allow_select_monthly_reports" ON monthly_learning_reports
-  FOR SELECT USING (true);
+DROP POLICY IF EXISTS "service_role_select_monthly_reports" ON monthly_learning_reports;
+CREATE POLICY "service_role_select_monthly_reports" ON monthly_learning_reports
+  FOR SELECT TO service_role USING (auth.role() = 'service_role');
 DROP POLICY IF EXISTS "allow_insert_monthly_reports" ON monthly_learning_reports;
-CREATE POLICY "allow_insert_monthly_reports" ON monthly_learning_reports
-  FOR INSERT WITH CHECK (true);
+DROP POLICY IF EXISTS "service_role_insert_monthly_reports" ON monthly_learning_reports;
+CREATE POLICY "service_role_insert_monthly_reports" ON monthly_learning_reports
+  FOR INSERT TO service_role WITH CHECK (auth.role() = 'service_role');
+
+REVOKE ALL ON TABLE monthly_learning_reports FROM anon, authenticated;
+GRANT SELECT, INSERT ON TABLE monthly_learning_reports TO service_role;
 
 -- ============================================
 -- ビュー：月次学習分析用
@@ -161,6 +178,15 @@ GROUP BY
   END
 ORDER BY count DESC;
 
+REVOKE ALL ON TABLE monthly_learning_summary FROM anon, authenticated;
+REVOKE ALL ON TABLE risk_factor_analysis FROM anon, authenticated;
+REVOKE ALL ON TABLE implementation_analysis FROM anon, authenticated;
+REVOKE ALL ON TABLE confidence_distribution FROM anon, authenticated;
+GRANT SELECT ON TABLE monthly_learning_summary TO service_role;
+GRANT SELECT ON TABLE risk_factor_analysis TO service_role;
+GRANT SELECT ON TABLE implementation_analysis TO service_role;
+GRANT SELECT ON TABLE confidence_distribution TO service_role;
+
 -- ============================================
 -- 旧テーブル（v1）からのマイグレーション手順
 -- ============================================
@@ -184,7 +210,7 @@ SELECT
   saved_at
 FROM daily_ai_curations
 WHERE saved_at > NOW() - INTERVAL '30 days'
-ON CONFLICT (url, saved_at) DO NOTHING;
+ON CONFLICT (url, saved_date) DO NOTHING;
 */
 
 -- ============================================
