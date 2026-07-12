@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS daily_ai_curations_v2 (
   
   -- 基本情報
   title TEXT NOT NULL,
-  url TEXT UNIQUE,
+  url TEXT,
   category TEXT NOT NULL,
   
   -- Hackathon統合スコアリング
@@ -41,6 +41,10 @@ CREATE TABLE IF NOT EXISTS daily_ai_curations_v2 (
   saved_at TIMESTAMP DEFAULT NOW()
 );
 
+-- 既存環境で作成済みのグローバル URL 一意制約を解除し、日次単位に限定する。
+ALTER TABLE daily_ai_curations_v2
+  DROP CONSTRAINT IF EXISTS daily_ai_curations_v2_url_key;
+
 -- ============================================
 -- インデックス（クエリ最適化）
 -- ============================================
@@ -51,6 +55,9 @@ CREATE INDEX IF NOT EXISTS idx_v2_confidence ON daily_ai_curations_v2(confidence
 CREATE INDEX IF NOT EXISTS idx_v2_priority ON daily_ai_curations_v2(priority);
 CREATE INDEX IF NOT EXISTS idx_v2_saved_date ON daily_ai_curations_v2(saved_at DESC);
 CREATE INDEX IF NOT EXISTS idx_v2_complexity ON daily_ai_curations_v2(implementation_complexity);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_unique_url_per_day
+  ON daily_ai_curations_v2 (url, ((saved_at::date)))
+  WHERE url IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_unique_title_per_day
   ON daily_ai_curations_v2 (title, ((saved_at::date)));
 
@@ -60,15 +67,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_unique_title_per_day
 
 ALTER TABLE daily_ai_curations_v2 ENABLE ROW LEVEL SECURITY;
 
--- すべてのユーザーが読み取り可能
+REVOKE ALL ON daily_ai_curations_v2 FROM anon, authenticated;
+GRANT SELECT, INSERT ON daily_ai_curations_v2 TO service_role;
+
+-- 内部キュレーションデータは service_role のみ読み取り可能
 DROP POLICY IF EXISTS "allow_select_v2" ON daily_ai_curations_v2;
 CREATE POLICY "allow_select_v2" ON daily_ai_curations_v2
-  FOR SELECT USING (true);
+  FOR SELECT TO service_role
+  USING (auth.role() = 'service_role');
 
--- 認証済みユーザーが挿入可能
+-- GitHub Actions の保存処理も service_role のみ許可
 DROP POLICY IF EXISTS "allow_insert_v2" ON daily_ai_curations_v2;
 CREATE POLICY "allow_insert_v2" ON daily_ai_curations_v2
-  FOR INSERT WITH CHECK (true);
+  FOR INSERT TO service_role
+  WITH CHECK (auth.role() = 'service_role');
 
 -- ============================================
 -- 月次学習レポートテーブル
@@ -84,12 +96,16 @@ CREATE TABLE IF NOT EXISTS monthly_learning_reports (
 CREATE INDEX IF NOT EXISTS idx_monthly_reports_month ON monthly_learning_reports(month);
 
 ALTER TABLE monthly_learning_reports ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON monthly_learning_reports FROM anon, authenticated;
+GRANT SELECT, INSERT ON monthly_learning_reports TO service_role;
 DROP POLICY IF EXISTS "allow_select_monthly_reports" ON monthly_learning_reports;
 CREATE POLICY "allow_select_monthly_reports" ON monthly_learning_reports
-  FOR SELECT USING (true);
+  FOR SELECT TO service_role
+  USING (auth.role() = 'service_role');
 DROP POLICY IF EXISTS "allow_insert_monthly_reports" ON monthly_learning_reports;
 CREATE POLICY "allow_insert_monthly_reports" ON monthly_learning_reports
-  FOR INSERT WITH CHECK (true);
+  FOR INSERT TO service_role
+  WITH CHECK (auth.role() = 'service_role');
 
 -- ============================================
 -- ビュー：月次学習分析用
@@ -108,6 +124,9 @@ FROM daily_ai_curations_v2
 GROUP BY category, DATE_TRUNC('month', saved_at)
 ORDER BY month DESC, avg_score DESC;
 
+REVOKE ALL ON monthly_learning_summary FROM anon, authenticated;
+GRANT SELECT ON monthly_learning_summary TO service_role;
+
 -- ============================================
 -- ビュー：リスク因子分析
 -- ============================================
@@ -121,6 +140,9 @@ FROM daily_ai_curations_v2
 WHERE risk_factors IS NOT NULL AND array_length(risk_factors, 1) > 0
 GROUP BY risk_factor
 ORDER BY occurrences DESC;
+
+REVOKE ALL ON risk_factor_analysis FROM anon, authenticated;
+GRANT SELECT ON risk_factor_analysis TO service_role;
 
 -- ============================================
 -- ビュー：実装難度別分析
@@ -136,6 +158,9 @@ SELECT
 FROM daily_ai_curations_v2
 GROUP BY implementation_complexity
 ORDER BY avg_score DESC;
+
+REVOKE ALL ON implementation_analysis FROM anon, authenticated;
+GRANT SELECT ON implementation_analysis TO service_role;
 
 -- ============================================
 -- ビュー：信頼度スコア分布（品質管理用）
@@ -161,6 +186,9 @@ GROUP BY
   END
 ORDER BY count DESC;
 
+REVOKE ALL ON confidence_distribution FROM anon, authenticated;
+GRANT SELECT ON confidence_distribution TO service_role;
+
 -- ============================================
 -- 旧テーブル（v1）からのマイグレーション手順
 -- ============================================
@@ -184,7 +212,7 @@ SELECT
   saved_at
 FROM daily_ai_curations
 WHERE saved_at > NOW() - INTERVAL '30 days'
-ON CONFLICT (url, saved_at) DO NOTHING;
+ON CONFLICT DO NOTHING;
 */
 
 -- ============================================
