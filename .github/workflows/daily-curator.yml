@@ -36,4 +36,4 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           LINE_MESSAGING_API_TOKEN: ${{ secrets.LINE_MESSAGING_API_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
-        run: node -e "import('./daily-ai-curator.js').then(m => m.runCuratorWithHackathonTechniques())"
+        run: node -e "import('./daily-ai-curator.js').then(m => m.runCuratorWithHackathonTechniques()).catch(err => { console.error(err); process.exit(1); })"
