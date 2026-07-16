@@ -25,6 +25,9 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
+const ANTHROPIC_MODEL =
+  process.env.ANTHROPIC_MODEL || "claude-opus-4-1-20250805";
+
 // ============================================
 // 強化版：検索キーワード戦略 + AI最適化
 // ============================================
@@ -106,7 +109,7 @@ async function optimizeKeywordWithThinking(baseKeyword, category) {
    */
   try {
     const response = await anthropic.messages.create({
-      model: "claude-opus-4-20250805",
+      model: ANTHROPIC_MODEL,
       max_tokens: 2000,
       thinking: {
         type: "enabled",
@@ -251,7 +254,7 @@ async function scoreArticleWithHackathonTechniques(article) {
 
   try {
     const response = await anthropic.messages.create({
-      model: "claude-opus-4-20250805",
+      model: ANTHROPIC_MODEL,
       max_tokens: 16000,
       thinking: {
         type: "enabled",
@@ -361,7 +364,7 @@ async function runCuratorWithHackathonTechniques() {
     for (const kw of optimizedKeywords.slice(0, 5)) {
       // コスト削減：最初の5つのみ実行
       const response = await anthropic.messages.create({
-        model: "claude-opus-4-20250805",
+        model: ANTHROPIC_MODEL,
         max_tokens: 2000,
         messages: [
           {
