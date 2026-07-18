@@ -302,6 +302,16 @@ ${SCORING_CRITERIA}
 
     return {
       ...score,
+      axis_breakdown:
+        score.axis_breakdown && typeof score.axis_breakdown === "object"
+          ? score.axis_breakdown
+          : {},
+      applicable_business: Array.isArray(score.applicable_business)
+        ? score.applicable_business
+        : [],
+      risk_factors: Array.isArray(score.risk_factors)
+        ? score.risk_factors
+        : [],
       thinking_process: thinkingProcess, // 月次学習用
       thinking_summary: thinkingSummary, // 人間が読むため
       article_title: article.title,
@@ -324,6 +334,83 @@ function extractThinkingSummary(thinkingProcess) {
 
   // 最初の200文字を要約として使用
   return thinkingProcess.substring(0, 300).trim();
+}
+
+function isUniqueViolation(error) {
+  return error?.code === "23505";
+}
+
+function toV2Row(article) {
+  return {
+    title: article.article_title,
+    url: article.article_url,
+    category: article.category,
+    total_score: article.total_score,
+    breakdown: article.axis_breakdown,
+    confidence: article.confidence,
+    applicable_business: article.applicable_business,
+    risk_factors: article.risk_factors,
+    thinking_summary: article.thinking_summary,
+    thinking_process: article.thinking_process,
+    implementation_complexity: article.implementation_complexity,
+    priority: article.priority,
+    saved_at: new Date().toISOString(),
+  };
+}
+
+function toV1Row(article) {
+  const breakdown = article.axis_breakdown || {};
+
+  return {
+    title: article.article_title,
+    url: article.article_url,
+    category: article.category,
+    total_score: article.total_score,
+    breakdown: {
+      adoption: breakdown.adoption_score,
+      revenue_speed: breakdown.revenue_score,
+      scalability: breakdown.scalability_score,
+      stack_compatibility: breakdown.compatibility_score,
+    },
+    applicable_business: article.applicable_business,
+    priority: article.priority,
+    saved_at: new Date().toISOString(),
+  };
+}
+
+async function saveScoredArticles(scoredArticles, client = supabase) {
+  const savedArticles = [];
+
+  for (const article of scoredArticles) {
+    const { error } = await client
+      .from("daily_ai_curations_v2")
+      .insert(toV2Row(article));
+
+    if (!error) {
+      savedArticles.push(article);
+      continue;
+    }
+
+    if (isUniqueViolation(error)) {
+      console.warn(`Skipping already-saved article: ${article.article_url}`);
+      continue;
+    }
+
+    console.error("Supabase v2 error:", error);
+    const { error: fallbackError } = await client
+      .from("daily_ai_curations")
+      .insert(toV1Row(article));
+
+    if (fallbackError) {
+      throw new Error(
+        `Failed to save "${article.article_title}" to Supabase v2 (${error.message}) and v1 (${fallbackError.message})`
+      );
+    }
+
+    savedArticles.push(article);
+  }
+
+  return savedArticles;
 }
 
 // ============================================
@@ -408,65 +495,28 @@ Return ONLY JSON array: [{"title":"...", "url":"...", "summary":"...", "source":
     );
 
     // ステップ4：Supabase に保存（thinking含む）
+    let savedArticles = [];
     if (scoredArticles.length > 0) {
       console.log("💾 Saving to Supabase with thinking data...");
-
-      // 新しいテーブル構造：thinking データを保持
-      const { error } = await supabase
-        .from("daily_ai_curations_v2")
-        .insert(
-          scoredArticles.map((article) => ({
-            title: article.article_title,
-            url: article.article_url,
-            category: article.category,
-            total_score: article.total_score,
-            breakdown: article.axis_breakdown,
-            confidence: article.confidence,
-            applicable_business: article.applicable_business,
-            risk_factors: article.risk_factors,
-            thinking_summary: article.thinking_summary,
-            thinking_process: article.thinking_process, // 学習用
-            implementation_complexity: article.implementation_complexity,
-            priority: article.priority,
-            saved_at: new Date().toISOString(),
-          }))
-        );
-
-      if (error) {
-        console.error("Supabase error:", error);
-        // v1 テーブルにフォールバック
-        await supabase.from("daily_ai_curations").insert(
-          scoredArticles.map((article) => ({
-            title: article.article_title,
-            url: article.article_url,
-            category: article.category,
-            total_score: article.total_score,
-            breakdown: {
-              adoption: article.axis_breakdown.adoption_score,
-              revenue_speed: article.axis_breakdown.revenue_score,
-              scalability: article.axis_breakdown.scalability_score,
-              stack_compatibility: article.axis_breakdown.compatibility_score,
-            },
-            applicable_business: article.applicable_business,
-            priority: article.priority,
-            saved_at: new Date().toISOString(),
-          }))
-        );
-      } else {
-        console.log("✅ Saved to Supabase v2 (with thinking data)\n");
-      }
+      savedArticles = await saveScoredArticles(scoredArticles);
+      console.log(`✅ Saved ${savedArticles.length} articles to Supabase\n`);
     }
 
     // ステップ5：LINE通知（信頼度スコア含む）
-    await notifyLineWithConfidence(scoredArticles);
+    await notifyLineWithConfidence(savedArticles);
 
     console.log("✅ Curator task completed (Hackathon v2)");
 
     // ステップ6：月次学習ログ出力
-    logMonthlyLearningOpportunities(scoredArticles);
+    logMonthlyLearningOpportunities(savedArticles);
   } catch (error) {
     console.error("❌ Error:", error);
-    await notifyLineError(error);
+    try {
+      await notifyLineError(error);
+    } catch (notificationError) {
+      console.error("Failed to send error notification:", notificationError);
+    }
+    throw error;
   }
 }
 
@@ -518,22 +568,25 @@ async function sendLineMessage(message) {
     return;
   }
 
-  try {
-    await fetch("https://api.line.me/v2/bot/message/push", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${lineToken}`,
-      },
-      body: JSON.stringify({
-        to: lineUserId,
-        messages: [{ type: "text", text: message }],
-      }),
-    });
-    console.log("✅ LINE notification sent (with confidence)");
-  } catch (error) {
-    console.error("LINE error:", error);
+  const response = await fetch("https://api.line.me/v2/bot/message/push", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${lineToken}`,
+    },
+    body: JSON.stringify({
+      to: lineUserId,
+      messages: [{ type: "text", text: message }],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `LINE push failed with HTTP ${response.status}: ${await response.text()}`
+    );
   }
+
+  console.log("✅ LINE notification sent (with confidence)");
 }
 
 async function notifyLineError(error) {
@@ -589,4 +642,4 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   runCuratorWithHackathonTechniques();
 }
 
-export { runCuratorWithHackathonTechniques };
+export { runCuratorWithHackathonTechniques, saveScoredArticles };
