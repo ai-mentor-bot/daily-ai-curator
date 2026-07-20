@@ -24,6 +24,8 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
+const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || "claude-opus-4-8";
+
 // ============================================
 // 月次学習実行
 // ============================================
@@ -74,7 +76,12 @@ async function runMonthlyLearning() {
     console.log("✅ Monthly learning completed");
   } catch (error) {
     console.error("❌ Learning error:", error);
-    await notifyLearningError(error);
+    try {
+      await notifyLearningError(error);
+    } catch (notifyError) {
+      console.error("Failed to send monthly error notification:", notifyError);
+    }
+    throw error;
   }
 }
 
@@ -95,10 +102,14 @@ async function collectMonthlyData() {
   if (error) {
     console.warn("Supabase query error (using v1):", error);
     // v1テーブルへのフォールバック
-    const { data: articlesV1 } = await supabase
+    const { data: articlesV1, error: fallbackError } = await supabase
       .from("daily_ai_curations")
       .select("*")
       .gte("saved_at", thirtyDaysAgo.toISOString());
+
+    if (fallbackError) {
+      throw new Error(`Supabase v1 fallback query failed: ${fallbackError.message}`);
+    }
 
     return {
       articles: articlesV1 || [],
@@ -138,11 +149,10 @@ async function analyzeThinkingPatterns(monthlyData) {
 
   try {
     const response = await anthropic.messages.create({
-      model: "claude-opus-4-20250805",
+      model: ANTHROPIC_MODEL,
       max_tokens: 3000,
       thinking: {
-        type: "enabled",
-        budget_tokens: 2000,
+        type: "adaptive",
       },
       messages: [
         {
@@ -349,10 +359,10 @@ async function saveMonthlyReport(
   ]);
 
   if (error) {
-    console.warn("Monthly report save error:", error);
-  } else {
-    console.log("✅ Monthly report saved to Supabase");
+    throw new Error(`Monthly report save failed: ${error.message}`);
   }
+
+  console.log("✅ Monthly report saved to Supabase");
 }
 
 async function notifyMonthlyReport(patterns, accuracy, recommendations) {
@@ -385,7 +395,7 @@ ${recommendations
   if (!lineToken || !lineUserId) return;
 
   try {
-    await fetch("https://api.line.me/v2/bot/message/push", {
+    const response = await fetch("https://api.line.me/v2/bot/message/push", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -396,6 +406,10 @@ ${recommendations
         messages: [{ type: "text", text: message }],
       }),
     });
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`LINE monthly report failed with HTTP ${response.status}: ${body}`);
+    }
     console.log("✅ Monthly report notified via LINE");
   } catch (error) {
     console.error("LINE notification error:", error);
@@ -408,7 +422,7 @@ async function notifyLearningError(error) {
 
   if (!lineToken || !lineUserId) return;
 
-  await fetch("https://api.line.me/v2/bot/message/push", {
+  const response = await fetch("https://api.line.me/v2/bot/message/push", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -424,6 +438,10 @@ async function notifyLearningError(error) {
       ],
     }),
   });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`LINE monthly error notification failed with HTTP ${response.status}: ${body}`);
+  }
 }
 
 // ============================================
@@ -431,7 +449,9 @@ async function notifyLearningError(error) {
 // ============================================
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  runMonthlyLearning();
+  runMonthlyLearning().catch(() => {
+    process.exitCode = 1;
+  });
 }
 
 export { runMonthlyLearning };
