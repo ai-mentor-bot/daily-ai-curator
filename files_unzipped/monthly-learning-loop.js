@@ -24,7 +24,7 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
-const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || "claude-opus-4-20250805";
+const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || "claude-opus-4-8";
 
 // ============================================
 // 月次学習実行
@@ -152,8 +152,7 @@ async function analyzeThinkingPatterns(monthlyData) {
       model: ANTHROPIC_MODEL,
       max_tokens: 3000,
       thinking: {
-        type: "enabled",
-        budget_tokens: 2000,
+        type: "adaptive",
       },
       messages: [
         {
