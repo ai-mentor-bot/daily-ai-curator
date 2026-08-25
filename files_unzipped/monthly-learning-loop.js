@@ -74,7 +74,12 @@ async function runMonthlyLearning() {
     console.log("✅ Monthly learning completed");
   } catch (error) {
     console.error("❌ Learning error:", error);
-    await notifyLearningError(error);
+    try {
+      await notifyLearningError(error);
+    } catch (notificationError) {
+      console.error("Monthly learning error notification failed:", notificationError);
+    }
+    throw error;
   }
 }
 
@@ -95,10 +100,16 @@ async function collectMonthlyData() {
   if (error) {
     console.warn("Supabase query error (using v1):", error);
     // v1テーブルへのフォールバック
-    const { data: articlesV1 } = await supabase
+    const { data: articlesV1, error: fallbackError } = await supabase
       .from("daily_ai_curations")
       .select("*")
       .gte("saved_at", thirtyDaysAgo.toISOString());
+
+    if (fallbackError) {
+      throw new Error(
+        `Failed to collect monthly data from v2 and v1 tables: v2=${error.message || error}; v1=${fallbackError.message || fallbackError}`
+      );
+    }
 
     return {
       articles: articlesV1 || [],
@@ -349,9 +360,35 @@ async function saveMonthlyReport(
   ]);
 
   if (error) {
-    console.warn("Monthly report save error:", error);
-  } else {
-    console.log("✅ Monthly report saved to Supabase");
+    throw new Error(`Monthly report save error: ${error.message || error}`);
+  }
+
+  console.log("✅ Monthly report saved to Supabase");
+}
+
+async function sendLineMessage(message) {
+  const lineToken = process.env.LINE_MESSAGING_API_TOKEN;
+  const lineUserId = process.env.LINE_USER_ID;
+
+  if (!lineToken || !lineUserId) {
+    throw new Error("LINE credentials missing");
+  }
+
+  const response = await fetch("https://api.line.me/v2/bot/message/push", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${lineToken}`,
+    },
+    body: JSON.stringify({
+      to: lineUserId,
+      messages: [{ type: "text", text: message }],
+    }),
+  });
+
+  if (!response.ok) {
+    const responseText = await response.text();
+    throw new Error(`LINE push failed (${response.status}): ${responseText}`);
   }
 }
 
@@ -379,51 +416,12 @@ ${recommendations
 詳細は Supabase dashboard で確認
 `;
 
-  const lineToken = process.env.LINE_MESSAGING_API_TOKEN;
-  const lineUserId = process.env.LINE_USER_ID;
-
-  if (!lineToken || !lineUserId) return;
-
-  try {
-    await fetch("https://api.line.me/v2/bot/message/push", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${lineToken}`,
-      },
-      body: JSON.stringify({
-        to: lineUserId,
-        messages: [{ type: "text", text: message }],
-      }),
-    });
-    console.log("✅ Monthly report notified via LINE");
-  } catch (error) {
-    console.error("LINE notification error:", error);
-  }
+  await sendLineMessage(message);
+  console.log("✅ Monthly report notified via LINE");
 }
 
 async function notifyLearningError(error) {
-  const lineToken = process.env.LINE_MESSAGING_API_TOKEN;
-  const lineUserId = process.env.LINE_USER_ID;
-
-  if (!lineToken || !lineUserId) return;
-
-  await fetch("https://api.line.me/v2/bot/message/push", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${lineToken}`,
-    },
-    body: JSON.stringify({
-      to: lineUserId,
-      messages: [
-        {
-          type: "text",
-          text: `⚠️ Monthly Learning エラー\n\n${error.message}`,
-        },
-      ],
-    }),
-  });
+  await sendLineMessage(`⚠️ Monthly Learning エラー\n\n${error.message}`);
 }
 
 // ============================================
@@ -431,7 +429,9 @@ async function notifyLearningError(error) {
 // ============================================
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  runMonthlyLearning();
+  runMonthlyLearning().catch(() => {
+    process.exit(1);
+  });
 }
 
 export { runMonthlyLearning };

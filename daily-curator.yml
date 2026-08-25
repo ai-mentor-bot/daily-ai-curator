@@ -62,4 +62,4 @@ jobs:
           # 初回は thinking 無効 + 安定モデル（通ったら Secrets で上書き可）
           ANTHROPIC_MODEL: "claude-3-5-sonnet-20241022"
           ANTHROPIC_ENABLE_THINKING: "0"
-        run: node -e "import('./daily-ai-curator.js').then(m => m.runCuratorWithHackathonTechniques())"
+        run: node -e "import('./daily-ai-curator.js').then(m => m.runCuratorWithHackathonTechniques()).catch(error => { console.error(error); process.exit(1); })"
