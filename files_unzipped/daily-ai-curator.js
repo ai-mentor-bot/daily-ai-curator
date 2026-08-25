@@ -16,14 +16,40 @@ import Anthropic from "@anthropic-ai/sdk";
 import fetch from "node-fetch";
 import { createClient } from "@supabase/supabase-js";
 
+const ANTHROPIC_MODEL =
+  process.env.ANTHROPIC_MODEL || "claude-sonnet-4-20250514";
+const ENABLE_THINKING = process.env.ANTHROPIC_ENABLE_THINKING === "1";
+
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
 const supabase = createClient(
-  process.env.SUPABASE_URL,
+  normalizeSupabaseUrl(process.env.SUPABASE_URL),
   process.env.SUPABASE_KEY
 );
+
+function normalizeSupabaseUrl(url) {
+  if (!url || /^https?:\/\//i.test(url)) {
+    return url;
+  }
+  return `https://${url}`;
+}
+
+function buildAnthropicRequest(maxTokens, thinkingTokens) {
+  return {
+    model: ANTHROPIC_MODEL,
+    max_tokens: maxTokens,
+    ...(ENABLE_THINKING
+      ? {
+          thinking: {
+            type: "enabled",
+            budget_tokens: thinkingTokens,
+          },
+        }
+      : {}),
+  };
+}
 
 // ============================================
 // 強化版：検索キーワード戦略 + AI最適化
@@ -106,12 +132,7 @@ async function optimizeKeywordWithThinking(baseKeyword, category) {
    */
   try {
     const response = await anthropic.messages.create({
-      model: "claude-opus-4-20250805",
-      max_tokens: 2000,
-      thinking: {
-        type: "enabled",
-        budget_tokens: 1500,
-      },
+      ...buildAnthropicRequest(2000, 1500),
       messages: [
         {
           role: "user",
@@ -251,12 +272,7 @@ async function scoreArticleWithHackathonTechniques(article) {
 
   try {
     const response = await anthropic.messages.create({
-      model: "claude-opus-4-20250805",
-      max_tokens: 16000,
-      thinking: {
-        type: "enabled",
-        budget_tokens: 8000, // 詳細な思考プロセス
-      },
+      ...buildAnthropicRequest(16000, 8000),
       messages: [
         {
           role: "user",
@@ -300,7 +316,7 @@ ${SCORING_CRITERIA}
     // 思考プロセスの要約
     const thinkingSummary = extractThinkingSummary(thinkingProcess);
 
-    return {
+    return normalizeScoredArticle({
       ...score,
       thinking_process: thinkingProcess, // 月次学習用
       thinking_summary: thinkingSummary, // 人間が読むため
@@ -308,7 +324,7 @@ ${SCORING_CRITERIA}
       article_url: article.url,
       category: article.searchQuery?.category,
       scored_at: new Date().toISOString(),
-    };
+    });
   } catch (error) {
     console.error(`Scoring error for "${article.title}":`, error);
     return null;
@@ -324,6 +340,70 @@ function extractThinkingSummary(thinkingProcess) {
 
   // 最初の200文字を要約として使用
   return thinkingProcess.substring(0, 300).trim();
+}
+
+function normalizeScoredArticle(score) {
+  if (!score || typeof score !== "object") {
+    return null;
+  }
+
+  const totalScore = toFiniteNumber(score.total_score);
+  if (totalScore === null) {
+    return null;
+  }
+
+  const confidence = clamp(toFiniteNumber(score.confidence) ?? 0, 0, 1);
+  const axisBreakdown =
+    score.axis_breakdown && typeof score.axis_breakdown === "object"
+      ? score.axis_breakdown
+      : {};
+
+  return {
+    ...score,
+    total_score: clamp(totalScore, 0, 100),
+    confidence,
+    applicable_business: normalizeStringArray(score.applicable_business),
+    risk_factors: normalizeStringArray(score.risk_factors),
+    axis_breakdown: {
+      adoption_score: toFiniteNumber(axisBreakdown.adoption_score) ?? 0,
+      adoption_reason: axisBreakdown.adoption_reason || "",
+      revenue_score: toFiniteNumber(axisBreakdown.revenue_score) ?? 0,
+      revenue_reason: axisBreakdown.revenue_reason || "",
+      scalability_score: toFiniteNumber(axisBreakdown.scalability_score) ?? 0,
+      scalability_reason: axisBreakdown.scalability_reason || "",
+      compatibility_score: toFiniteNumber(axisBreakdown.compatibility_score) ?? 0,
+      compatibility_reason: axisBreakdown.compatibility_reason || "",
+    },
+    implementation_complexity: ["LOW", "MEDIUM", "HIGH"].includes(
+      score.implementation_complexity
+    )
+      ? score.implementation_complexity
+      : "MEDIUM",
+    priority: ["HIGH", "MEDIUM", "LOW"].includes(score.priority)
+      ? score.priority
+      : totalScore >= 85
+        ? "HIGH"
+        : "MEDIUM",
+  };
+}
+
+function normalizeStringArray(value) {
+  if (Array.isArray(value)) {
+    return value.filter((item) => typeof item === "string" && item.trim());
+  }
+  if (typeof value === "string" && value.trim()) {
+    return [value.trim()];
+  }
+  return [];
+}
+
+function toFiniteNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
 }
 
 // ============================================
@@ -361,8 +441,7 @@ async function runCuratorWithHackathonTechniques() {
     for (const kw of optimizedKeywords.slice(0, 5)) {
       // コスト削減：最初の5つのみ実行
       const response = await anthropic.messages.create({
-        model: "claude-opus-4-20250805",
-        max_tokens: 2000,
+        ...buildAnthropicRequest(2000, 1500),
         messages: [
           {
             role: "user",
@@ -410,51 +489,7 @@ Return ONLY JSON array: [{"title":"...", "url":"...", "summary":"...", "source":
     // ステップ4：Supabase に保存（thinking含む）
     if (scoredArticles.length > 0) {
       console.log("💾 Saving to Supabase with thinking data...");
-
-      // 新しいテーブル構造：thinking データを保持
-      const { error } = await supabase
-        .from("daily_ai_curations_v2")
-        .insert(
-          scoredArticles.map((article) => ({
-            title: article.article_title,
-            url: article.article_url,
-            category: article.category,
-            total_score: article.total_score,
-            breakdown: article.axis_breakdown,
-            confidence: article.confidence,
-            applicable_business: article.applicable_business,
-            risk_factors: article.risk_factors,
-            thinking_summary: article.thinking_summary,
-            thinking_process: article.thinking_process, // 学習用
-            implementation_complexity: article.implementation_complexity,
-            priority: article.priority,
-            saved_at: new Date().toISOString(),
-          }))
-        );
-
-      if (error) {
-        console.error("Supabase error:", error);
-        // v1 テーブルにフォールバック
-        await supabase.from("daily_ai_curations").insert(
-          scoredArticles.map((article) => ({
-            title: article.article_title,
-            url: article.article_url,
-            category: article.category,
-            total_score: article.total_score,
-            breakdown: {
-              adoption: article.axis_breakdown.adoption_score,
-              revenue_speed: article.axis_breakdown.revenue_score,
-              scalability: article.axis_breakdown.scalability_score,
-              stack_compatibility: article.axis_breakdown.compatibility_score,
-            },
-            applicable_business: article.applicable_business,
-            priority: article.priority,
-            saved_at: new Date().toISOString(),
-          }))
-        );
-      } else {
-        console.log("✅ Saved to Supabase v2 (with thinking data)\n");
-      }
+      await saveScoredArticles(scoredArticles);
     }
 
     // ステップ5：LINE通知（信頼度スコア含む）
@@ -466,8 +501,96 @@ Return ONLY JSON array: [{"title":"...", "url":"...", "summary":"...", "source":
     logMonthlyLearningOpportunities(scoredArticles);
   } catch (error) {
     console.error("❌ Error:", error);
-    await notifyLineError(error);
+    try {
+      await notifyLineError(error);
+    } catch (notifyError) {
+      console.error("LINE error notification failed:", notifyError);
+    }
+    throw error;
   }
+}
+
+async function saveScoredArticles(articles, supabaseClient = supabase) {
+  const fallbackRows = [];
+  let v2Saved = 0;
+
+  for (const article of articles) {
+    const { error } = await supabaseClient
+      .from("daily_ai_curations_v2")
+      .upsert(buildV2CurationRow(article), {
+        onConflict: "url",
+        ignoreDuplicates: true,
+      });
+
+    if (error) {
+      console.error(`Supabase v2 save error for "${article.article_title}":`, error);
+      fallbackRows.push(buildLegacyCurationRow(article));
+    } else {
+      v2Saved += 1;
+    }
+  }
+
+  if (fallbackRows.length > 0) {
+    const { error: fallbackError } = await supabaseClient
+      .from("daily_ai_curations")
+      .insert(fallbackRows);
+
+    if (fallbackError) {
+      throw new Error(
+        `Supabase v2 save failed for ${fallbackRows.length} article(s); ` +
+          `legacy fallback failed: ${formatSupabaseError(fallbackError)}`
+      );
+    }
+
+    console.log(`✅ Saved ${fallbackRows.length} article(s) to legacy Supabase table`);
+  }
+
+  if (v2Saved > 0) {
+    console.log(`✅ Saved ${v2Saved} article(s) to Supabase v2 (with thinking data)\n`);
+  }
+}
+
+function buildV2CurationRow(article) {
+  return {
+    title: article.article_title,
+    url: article.article_url,
+    category: article.category,
+    total_score: article.total_score,
+    breakdown: article.axis_breakdown,
+    confidence: article.confidence,
+    applicable_business: article.applicable_business,
+    risk_factors: article.risk_factors,
+    thinking_summary: article.thinking_summary,
+    thinking_process: article.thinking_process, // 学習用
+    implementation_complexity: article.implementation_complexity,
+    priority: article.priority,
+    saved_at: new Date().toISOString(),
+  };
+}
+
+function buildLegacyCurationRow(article) {
+  return {
+    title: article.article_title,
+    url: article.article_url,
+    category: article.category,
+    total_score: article.total_score,
+    breakdown: {
+      adoption: article.axis_breakdown.adoption_score,
+      revenue_speed: article.axis_breakdown.revenue_score,
+      scalability: article.axis_breakdown.scalability_score,
+      stack_compatibility: article.axis_breakdown.compatibility_score,
+    },
+    applicable_business: article.applicable_business,
+    priority: article.priority,
+    saved_at: new Date().toISOString(),
+  };
+}
+
+function formatSupabaseError(error) {
+  if (!error) {
+    return "unknown error";
+  }
+  return error.message || JSON.stringify(error);
 }
 
 // ============================================
@@ -509,17 +632,16 @@ async function notifyLineWithConfidence(articles) {
   await sendLineMessage(message);
 }
 
-async function sendLineMessage(message) {
+async function sendLineMessage(message, fetchImpl = fetch) {
   const lineToken = process.env.LINE_MESSAGING_API_TOKEN;
   const lineUserId = process.env.LINE_USER_ID;
 
   if (!lineToken || !lineUserId) {
-    console.warn("LINE credentials missing");
-    return;
+    throw new Error("LINE credentials missing");
   }
 
   try {
-    await fetch("https://api.line.me/v2/bot/message/push", {
+    const response = await fetchImpl("https://api.line.me/v2/bot/message/push", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -530,9 +652,18 @@ async function sendLineMessage(message) {
         messages: [{ type: "text", text: message }],
       }),
     });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(
+        `LINE API error ${response.status} ${response.statusText}: ${body}`
+      );
+    }
+
     console.log("✅ LINE notification sent (with confidence)");
   } catch (error) {
     console.error("LINE error:", error);
+    throw error;
   }
 }
 
@@ -586,7 +717,18 @@ function getMostCommonRisk(articles) {
 // ============================================
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  runCuratorWithHackathonTechniques();
+  runCuratorWithHackathonTechniques().catch(() => {
+    process.exitCode = 1;
+  });
 }
 
-export { runCuratorWithHackathonTechniques };
+export {
+  buildLegacyCurationRow,
+  buildV2CurationRow,
+  getMostCommonRisk,
+  normalizeScoredArticle,
+  normalizeSupabaseUrl,
+  runCuratorWithHackathonTechniques,
+  saveScoredArticles,
+  sendLineMessage,
+};
