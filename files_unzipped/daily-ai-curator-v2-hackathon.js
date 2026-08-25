@@ -15,13 +15,14 @@
 import Anthropic from "@anthropic-ai/sdk";
 import fetch from "node-fetch";
 import { createClient } from "@supabase/supabase-js";
+import { buildAnthropicRequest, normalizeSupabaseUrl } from "./runtime-config.js";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
 const supabase = createClient(
-  process.env.SUPABASE_URL,
+  normalizeSupabaseUrl(process.env.SUPABASE_URL),
   process.env.SUPABASE_KEY
 );
 
@@ -105,14 +106,11 @@ async function optimizeKeywordWithThinking(baseKeyword, category) {
    * 実装案件の可能性を +30% 向上させる
    */
   try {
-    const response = await anthropic.messages.create({
-      model: "claude-opus-4-20250805",
-      max_tokens: 2000,
-      thinking: {
-        type: "enabled",
-        budget_tokens: 1500,
-      },
-      messages: [
+    const response = await anthropic.messages.create(
+      buildAnthropicRequest({
+        maxTokens: 2000,
+        thinkingBudget: 1500,
+        messages: [
         {
           role: "user",
           content: `
@@ -143,8 +141,9 @@ async function optimizeKeywordWithThinking(baseKeyword, category) {
 }
 `,
         },
-      ],
-    });
+        ],
+      })
+    );
 
     const content = response.content.find((c) => c.type === "text")?.text || "{}";
     const jsonMatch = content.match(/\{[\s\S]*\}/);
@@ -250,14 +249,11 @@ async function scoreArticleWithHackathonTechniques(article) {
    */
 
   try {
-    const response = await anthropic.messages.create({
-      model: "claude-opus-4-20250805",
-      max_tokens: 16000,
-      thinking: {
-        type: "enabled",
-        budget_tokens: 8000, // 詳細な思考プロセス
-      },
-      messages: [
+    const response = await anthropic.messages.create(
+      buildAnthropicRequest({
+        maxTokens: 8192,
+        thinkingBudget: 4000, // 詳細な思考プロセス
+        messages: [
         {
           role: "user",
           content: `
@@ -271,8 +267,9 @@ async function scoreArticleWithHackathonTechniques(article) {
 ${SCORING_CRITERIA}
 `,
         },
-      ],
-    });
+        ],
+      })
+    );
 
     // thinking プロセスの抽出（学習用）
     const thinkingBlock = response.content.find((c) => c.type === "thinking");
@@ -360,18 +357,20 @@ async function runCuratorWithHackathonTechniques() {
 
     for (const kw of optimizedKeywords.slice(0, 5)) {
       // コスト削減：最初の5つのみ実行
-      const response = await anthropic.messages.create({
-        model: "claude-opus-4-20250805",
-        max_tokens: 2000,
-        messages: [
+      const response = await anthropic.messages.create(
+        buildAnthropicRequest({
+          maxTokens: 2000,
+          thinkingBudget: 1500,
+          messages: [
           {
             role: "user",
             content: `Find 3 recent (2024-2025) articles about: "${kw.optimization.optimized_primary || kw.keyword}"
             
 Return ONLY JSON array: [{"title":"...", "url":"...", "summary":"...", "source":"...", "publish_date":"2025-XX-XX"}]`,
           },
-        ],
-      });
+          ],
+        })
+      );
 
       const content = response.content[0].text;
       const jsonMatch = content.match(/\[[\s\S]*\]/);
