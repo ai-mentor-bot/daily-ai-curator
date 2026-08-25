@@ -60,15 +60,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_unique_title_per_day
 
 ALTER TABLE daily_ai_curations_v2 ENABLE ROW LEVEL SECURITY;
 
--- すべてのユーザーが読み取り可能
 DROP POLICY IF EXISTS "allow_select_v2" ON daily_ai_curations_v2;
-CREATE POLICY "allow_select_v2" ON daily_ai_curations_v2
-  FOR SELECT USING (true);
-
--- 認証済みユーザーが挿入可能
 DROP POLICY IF EXISTS "allow_insert_v2" ON daily_ai_curations_v2;
-CREATE POLICY "allow_insert_v2" ON daily_ai_curations_v2
-  FOR INSERT WITH CHECK (true);
+DROP POLICY IF EXISTS "service_role_select_v2" ON daily_ai_curations_v2;
+DROP POLICY IF EXISTS "service_role_insert_v2" ON daily_ai_curations_v2;
+
+REVOKE ALL ON daily_ai_curations_v2 FROM anon, authenticated, PUBLIC;
+GRANT SELECT, INSERT ON daily_ai_curations_v2 TO service_role;
+
+-- thinking_process には内部判断ロジックが含まれるため service_role のみ許可
+CREATE POLICY "service_role_select_v2" ON daily_ai_curations_v2
+  FOR SELECT TO service_role USING (true);
+
+CREATE POLICY "service_role_insert_v2" ON daily_ai_curations_v2
+  FOR INSERT TO service_role WITH CHECK (true);
 
 -- ============================================
 -- 月次学習レポートテーブル
@@ -85,11 +90,18 @@ CREATE INDEX IF NOT EXISTS idx_monthly_reports_month ON monthly_learning_reports
 
 ALTER TABLE monthly_learning_reports ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "allow_select_monthly_reports" ON monthly_learning_reports;
-CREATE POLICY "allow_select_monthly_reports" ON monthly_learning_reports
-  FOR SELECT USING (true);
 DROP POLICY IF EXISTS "allow_insert_monthly_reports" ON monthly_learning_reports;
-CREATE POLICY "allow_insert_monthly_reports" ON monthly_learning_reports
-  FOR INSERT WITH CHECK (true);
+DROP POLICY IF EXISTS "service_role_select_monthly_reports" ON monthly_learning_reports;
+DROP POLICY IF EXISTS "service_role_insert_monthly_reports" ON monthly_learning_reports;
+
+REVOKE ALL ON monthly_learning_reports FROM anon, authenticated, PUBLIC;
+GRANT SELECT, INSERT ON monthly_learning_reports TO service_role;
+
+CREATE POLICY "service_role_select_monthly_reports" ON monthly_learning_reports
+  FOR SELECT TO service_role USING (true);
+
+CREATE POLICY "service_role_insert_monthly_reports" ON monthly_learning_reports
+  FOR INSERT TO service_role WITH CHECK (true);
 
 -- ============================================
 -- ビュー：月次学習分析用
@@ -160,6 +172,20 @@ GROUP BY
     ELSE 3
   END
 ORDER BY count DESC;
+
+REVOKE ALL ON
+  monthly_learning_summary,
+  risk_factor_analysis,
+  implementation_analysis,
+  confidence_distribution
+FROM anon, authenticated, PUBLIC;
+
+GRANT SELECT ON
+  monthly_learning_summary,
+  risk_factor_analysis,
+  implementation_analysis,
+  confidence_distribution
+TO service_role;
 
 -- ============================================
 -- 旧テーブル（v1）からのマイグレーション手順
