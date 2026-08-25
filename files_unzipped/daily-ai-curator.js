@@ -22,7 +22,7 @@ const anthropic = new Anthropic({
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY
 );
 
 // ============================================
@@ -94,6 +94,109 @@ const BASE_SEARCH_KEYWORDS = [
     weight: 1.15,
   },
 ];
+
+function toV2CurationRow(article, savedAt) {
+  return {
+    title: article.article_title,
+    url: article.article_url,
+    category: article.category,
+    total_score: article.total_score,
+    breakdown: article.axis_breakdown,
+    confidence: article.confidence,
+    applicable_business: article.applicable_business,
+    risk_factors: article.risk_factors,
+    thinking_summary: article.thinking_summary,
+    thinking_process: article.thinking_process,
+    implementation_complexity: article.implementation_complexity,
+    priority: article.priority,
+    saved_at: savedAt,
+  };
+}
+
+function toLegacyCurationRow(article, savedAt) {
+  return {
+    title: article.article_title,
+    url: article.article_url,
+    category: article.category,
+    total_score: article.total_score,
+    breakdown: {
+      adoption: article.axis_breakdown.adoption_score,
+      revenue_speed: article.axis_breakdown.revenue_score,
+      scalability: article.axis_breakdown.scalability_score,
+      stack_compatibility: article.axis_breakdown.compatibility_score,
+    },
+    applicable_business: article.applicable_business,
+    priority: article.priority,
+    saved_at: savedAt,
+  };
+}
+
+function isUniqueViolation(error) {
+  const errorText = [
+    error?.code,
+    error?.message,
+    error?.details,
+    error?.hint,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return /23505|duplicate key|unique constraint/i.test(errorText);
+}
+
+function toSupabaseError(error, prefix) {
+  const message =
+    error?.message || error?.details || error?.hint || JSON.stringify(error);
+  const wrappedError = new Error(`${prefix}: ${message}`);
+  wrappedError.cause = error;
+  return wrappedError;
+}
+
+async function saveScoredArticles(scoredArticles, client = supabase) {
+  const savedAt = new Date().toISOString();
+  const results = {
+    insertedV2: 0,
+    skippedDuplicates: 0,
+    insertedLegacy: 0,
+  };
+
+  for (const article of scoredArticles) {
+    const { error } = await client
+      .from("daily_ai_curations_v2")
+      .insert([toV2CurationRow(article, savedAt)]);
+
+    if (!error) {
+      results.insertedV2++;
+      continue;
+    }
+
+    if (isUniqueViolation(error)) {
+      results.skippedDuplicates++;
+      console.warn(
+        `Skipping duplicate curation row: ${article.article_title} (${article.article_url})`
+      );
+      continue;
+    }
+
+    console.error("Supabase v2 error:", error);
+    const { error: fallbackError } = await client
+      .from("daily_ai_curations")
+      .insert([toLegacyCurationRow(article, savedAt)]);
+
+    if (fallbackError) {
+      console.error("Supabase legacy fallback error:", fallbackError);
+      throw toSupabaseError(fallbackError, "Supabase legacy fallback failed");
+    }
+
+    results.insertedLegacy++;
+  }
+
+  console.log(
+    `✅ Supabase save complete: ${results.insertedV2} v2 inserted, ${results.skippedDuplicates} duplicates skipped, ${results.insertedLegacy} legacy fallback\n`
+  );
+
+  return results;
+}
 
 // ============================================
 // Phase 2: キーワード自動最適化（thinking使用）
@@ -410,51 +513,7 @@ Return ONLY JSON array: [{"title":"...", "url":"...", "summary":"...", "source":
     // ステップ4：Supabase に保存（thinking含む）
     if (scoredArticles.length > 0) {
       console.log("💾 Saving to Supabase with thinking data...");
-
-      // 新しいテーブル構造：thinking データを保持
-      const { error } = await supabase
-        .from("daily_ai_curations_v2")
-        .insert(
-          scoredArticles.map((article) => ({
-            title: article.article_title,
-            url: article.article_url,
-            category: article.category,
-            total_score: article.total_score,
-            breakdown: article.axis_breakdown,
-            confidence: article.confidence,
-            applicable_business: article.applicable_business,
-            risk_factors: article.risk_factors,
-            thinking_summary: article.thinking_summary,
-            thinking_process: article.thinking_process, // 学習用
-            implementation_complexity: article.implementation_complexity,
-            priority: article.priority,
-            saved_at: new Date().toISOString(),
-          }))
-        );
-
-      if (error) {
-        console.error("Supabase error:", error);
-        // v1 テーブルにフォールバック
-        await supabase.from("daily_ai_curations").insert(
-          scoredArticles.map((article) => ({
-            title: article.article_title,
-            url: article.article_url,
-            category: article.category,
-            total_score: article.total_score,
-            breakdown: {
-              adoption: article.axis_breakdown.adoption_score,
-              revenue_speed: article.axis_breakdown.revenue_score,
-              scalability: article.axis_breakdown.scalability_score,
-              stack_compatibility: article.axis_breakdown.compatibility_score,
-            },
-            applicable_business: article.applicable_business,
-            priority: article.priority,
-            saved_at: new Date().toISOString(),
-          }))
-        );
-      } else {
-        console.log("✅ Saved to Supabase v2 (with thinking data)\n");
-      }
+      await saveScoredArticles(scoredArticles);
     }
 
     // ステップ5：LINE通知（信頼度スコア含む）
@@ -466,7 +525,12 @@ Return ONLY JSON array: [{"title":"...", "url":"...", "summary":"...", "source":
     logMonthlyLearningOpportunities(scoredArticles);
   } catch (error) {
     console.error("❌ Error:", error);
-    await notifyLineError(error);
+    try {
+      await notifyLineError(error);
+    } catch (notifyError) {
+      console.error("Error notification failed:", notifyError);
+    }
+    throw error;
   }
 }
 
@@ -589,4 +653,4 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   runCuratorWithHackathonTechniques();
 }
 
-export { runCuratorWithHackathonTechniques };
+export { runCuratorWithHackathonTechniques, saveScoredArticles };

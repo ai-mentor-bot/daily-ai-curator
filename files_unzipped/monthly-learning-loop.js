@@ -21,7 +21,7 @@ const anthropic = new Anthropic({
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY
 );
 
 // ============================================
@@ -74,7 +74,12 @@ async function runMonthlyLearning() {
     console.log("✅ Monthly learning completed");
   } catch (error) {
     console.error("❌ Learning error:", error);
-    await notifyLearningError(error);
+    try {
+      await notifyLearningError(error);
+    } catch (notifyError) {
+      console.error("Error notification failed:", notifyError);
+    }
+    throw error;
   }
 }
 
@@ -86,7 +91,7 @@ async function collectMonthlyData() {
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-  const { data: articles, error } = await supabase
+  const { data: articlesV2, error } = await supabase
     .from("daily_ai_curations_v2")
     .select("*")
     .gte("saved_at", thirtyDaysAgo.toISOString())
@@ -95,10 +100,14 @@ async function collectMonthlyData() {
   if (error) {
     console.warn("Supabase query error (using v1):", error);
     // v1テーブルへのフォールバック
-    const { data: articlesV1 } = await supabase
+    const { data: articlesV1, error: legacyError } = await supabase
       .from("daily_ai_curations")
       .select("*")
       .gte("saved_at", thirtyDaysAgo.toISOString());
+
+    if (legacyError) {
+      throw legacyError;
+    }
 
     return {
       articles: articlesV1 || [],
@@ -107,11 +116,43 @@ async function collectMonthlyData() {
     };
   }
 
+  const { data: articlesV1, error: legacyError } = await supabase
+    .from("daily_ai_curations")
+    .select("*")
+    .gte("saved_at", thirtyDaysAgo.toISOString());
+
+  if (legacyError) {
+    console.warn("Legacy curation query error (using v2 only):", legacyError);
+  }
+
+  const mergedArticles = mergeCurationRows(articlesV2 || [], articlesV1 || []);
+
   return {
-    articles: articles || [],
+    articles: mergedArticles,
     month: new Date(),
-    version: "v2",
+    version: articlesV1?.length ? "v2+v1" : "v2",
   };
+}
+
+function mergeCurationRows(primaryRows, legacyRows) {
+  const seen = new Set();
+  const merged = [];
+
+  for (const row of primaryRows) {
+    if (row.url) {
+      seen.add(row.url);
+    }
+    merged.push(row);
+  }
+
+  for (const row of legacyRows) {
+    if (row.url && seen.has(row.url)) {
+      continue;
+    }
+    merged.push(row);
+  }
+
+  return merged.sort((a, b) => (b.total_score || 0) - (a.total_score || 0));
 }
 
 // ============================================
@@ -434,4 +475,4 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   runMonthlyLearning();
 }
 
-export { runMonthlyLearning };
+export { runMonthlyLearning, collectMonthlyData, mergeCurationRows };
