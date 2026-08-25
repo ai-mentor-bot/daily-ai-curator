@@ -60,15 +60,30 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_unique_title_per_day
 
 ALTER TABLE daily_ai_curations_v2 ENABLE ROW LEVEL SECURITY;
 
--- すべてのユーザーが読み取り可能
+-- 内部分析データ（thinking_process 等）は service_role のみアクセス可能
 DROP POLICY IF EXISTS "allow_select_v2" ON daily_ai_curations_v2;
-CREATE POLICY "allow_select_v2" ON daily_ai_curations_v2
-  FOR SELECT USING (true);
-
--- 認証済みユーザーが挿入可能
 DROP POLICY IF EXISTS "allow_insert_v2" ON daily_ai_curations_v2;
-CREATE POLICY "allow_insert_v2" ON daily_ai_curations_v2
-  FOR INSERT WITH CHECK (true);
+DROP POLICY IF EXISTS "service_role_select_v2" ON daily_ai_curations_v2;
+DROP POLICY IF EXISTS "service_role_insert_v2" ON daily_ai_curations_v2;
+DROP POLICY IF EXISTS "service_role_update_v2" ON daily_ai_curations_v2;
+DROP POLICY IF EXISTS "service_role_delete_v2" ON daily_ai_curations_v2;
+
+REVOKE ALL ON TABLE daily_ai_curations_v2 FROM anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE daily_ai_curations_v2 TO service_role;
+
+CREATE POLICY "service_role_select_v2" ON daily_ai_curations_v2
+  FOR SELECT TO service_role
+  USING (auth.role() = 'service_role');
+CREATE POLICY "service_role_insert_v2" ON daily_ai_curations_v2
+  FOR INSERT TO service_role
+  WITH CHECK (auth.role() = 'service_role');
+CREATE POLICY "service_role_update_v2" ON daily_ai_curations_v2
+  FOR UPDATE TO service_role
+  USING (auth.role() = 'service_role')
+  WITH CHECK (auth.role() = 'service_role');
+CREATE POLICY "service_role_delete_v2" ON daily_ai_curations_v2
+  FOR DELETE TO service_role
+  USING (auth.role() = 'service_role');
 
 -- ============================================
 -- 月次学習レポートテーブル
@@ -85,11 +100,28 @@ CREATE INDEX IF NOT EXISTS idx_monthly_reports_month ON monthly_learning_reports
 
 ALTER TABLE monthly_learning_reports ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "allow_select_monthly_reports" ON monthly_learning_reports;
-CREATE POLICY "allow_select_monthly_reports" ON monthly_learning_reports
-  FOR SELECT USING (true);
 DROP POLICY IF EXISTS "allow_insert_monthly_reports" ON monthly_learning_reports;
-CREATE POLICY "allow_insert_monthly_reports" ON monthly_learning_reports
-  FOR INSERT WITH CHECK (true);
+DROP POLICY IF EXISTS "service_role_select_monthly_reports" ON monthly_learning_reports;
+DROP POLICY IF EXISTS "service_role_insert_monthly_reports" ON monthly_learning_reports;
+DROP POLICY IF EXISTS "service_role_update_monthly_reports" ON monthly_learning_reports;
+DROP POLICY IF EXISTS "service_role_delete_monthly_reports" ON monthly_learning_reports;
+
+REVOKE ALL ON TABLE monthly_learning_reports FROM anon, authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE monthly_learning_reports TO service_role;
+
+CREATE POLICY "service_role_select_monthly_reports" ON monthly_learning_reports
+  FOR SELECT TO service_role
+  USING (auth.role() = 'service_role');
+CREATE POLICY "service_role_insert_monthly_reports" ON monthly_learning_reports
+  FOR INSERT TO service_role
+  WITH CHECK (auth.role() = 'service_role');
+CREATE POLICY "service_role_update_monthly_reports" ON monthly_learning_reports
+  FOR UPDATE TO service_role
+  USING (auth.role() = 'service_role')
+  WITH CHECK (auth.role() = 'service_role');
+CREATE POLICY "service_role_delete_monthly_reports" ON monthly_learning_reports
+  FOR DELETE TO service_role
+  USING (auth.role() = 'service_role');
 
 -- ============================================
 -- ビュー：月次学習分析用
@@ -108,6 +140,9 @@ FROM daily_ai_curations_v2
 GROUP BY category, DATE_TRUNC('month', saved_at)
 ORDER BY month DESC, avg_score DESC;
 
+REVOKE ALL ON TABLE monthly_learning_summary FROM anon, authenticated;
+GRANT SELECT ON TABLE monthly_learning_summary TO service_role;
+
 -- ============================================
 -- ビュー：リスク因子分析
 -- ============================================
@@ -121,6 +156,9 @@ FROM daily_ai_curations_v2
 WHERE risk_factors IS NOT NULL AND array_length(risk_factors, 1) > 0
 GROUP BY risk_factor
 ORDER BY occurrences DESC;
+
+REVOKE ALL ON TABLE risk_factor_analysis FROM anon, authenticated;
+GRANT SELECT ON TABLE risk_factor_analysis TO service_role;
 
 -- ============================================
 -- ビュー：実装難度別分析
@@ -136,6 +174,9 @@ SELECT
 FROM daily_ai_curations_v2
 GROUP BY implementation_complexity
 ORDER BY avg_score DESC;
+
+REVOKE ALL ON TABLE implementation_analysis FROM anon, authenticated;
+GRANT SELECT ON TABLE implementation_analysis TO service_role;
 
 -- ============================================
 -- ビュー：信頼度スコア分布（品質管理用）
@@ -160,6 +201,9 @@ GROUP BY
     ELSE 3
   END
 ORDER BY count DESC;
+
+REVOKE ALL ON TABLE confidence_distribution FROM anon, authenticated;
+GRANT SELECT ON TABLE confidence_distribution TO service_role;
 
 -- ============================================
 -- 旧テーブル（v1）からのマイグレーション手順
