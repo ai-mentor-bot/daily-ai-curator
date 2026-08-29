@@ -60,15 +60,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_unique_title_per_day
 
 ALTER TABLE daily_ai_curations_v2 ENABLE ROW LEVEL SECURITY;
 
--- すべてのユーザーが読み取り可能
+-- Cron/automation uses a server-side Supabase service role key.
+-- Do not expose thinking traces or learning reports to anon/authenticated clients.
 DROP POLICY IF EXISTS "allow_select_v2" ON daily_ai_curations_v2;
 CREATE POLICY "allow_select_v2" ON daily_ai_curations_v2
-  FOR SELECT USING (true);
+  FOR SELECT TO service_role USING (true);
 
--- 認証済みユーザーが挿入可能
+-- Writes must only come from the trusted automation runtime.
 DROP POLICY IF EXISTS "allow_insert_v2" ON daily_ai_curations_v2;
 CREATE POLICY "allow_insert_v2" ON daily_ai_curations_v2
-  FOR INSERT WITH CHECK (true);
+  FOR INSERT TO service_role WITH CHECK (true);
 
 -- ============================================
 -- 月次学習レポートテーブル
@@ -86,10 +87,10 @@ CREATE INDEX IF NOT EXISTS idx_monthly_reports_month ON monthly_learning_reports
 ALTER TABLE monthly_learning_reports ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "allow_select_monthly_reports" ON monthly_learning_reports;
 CREATE POLICY "allow_select_monthly_reports" ON monthly_learning_reports
-  FOR SELECT USING (true);
+  FOR SELECT TO service_role USING (true);
 DROP POLICY IF EXISTS "allow_insert_monthly_reports" ON monthly_learning_reports;
 CREATE POLICY "allow_insert_monthly_reports" ON monthly_learning_reports
-  FOR INSERT WITH CHECK (true);
+  FOR INSERT TO service_role WITH CHECK (true);
 
 -- ============================================
 -- ビュー：月次学習分析用
