@@ -13,6 +13,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { createClient } from "@supabase/supabase-js";
+import { getAnthropicModel } from "./anthropic-config.js";
 import fetch from "node-fetch";
 
 const anthropic = new Anthropic({
@@ -138,7 +139,7 @@ async function analyzeThinkingPatterns(monthlyData) {
 
   try {
     const response = await anthropic.messages.create({
-      model: "claude-opus-4-20250805",
+      model: getAnthropicModel(),
       max_tokens: 3000,
       thinking: {
         type: "enabled",
