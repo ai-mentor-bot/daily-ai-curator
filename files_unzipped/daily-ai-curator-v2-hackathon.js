@@ -15,13 +15,14 @@
 import Anthropic from "@anthropic-ai/sdk";
 import fetch from "node-fetch";
 import { createClient } from "@supabase/supabase-js";
+import { normalizeSupabaseUrl } from "./runtime-config.js";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
 const supabase = createClient(
-  process.env.SUPABASE_URL,
+  normalizeSupabaseUrl(process.env.SUPABASE_URL),
   process.env.SUPABASE_KEY
 );
 
