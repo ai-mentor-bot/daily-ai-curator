@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS daily_ai_curations_v2 (
   
   -- 基本情報
   title TEXT NOT NULL,
-  url TEXT UNIQUE,
+  url TEXT,
   category TEXT NOT NULL,
   
   -- Hackathon統合スコアリング
@@ -51,6 +51,9 @@ CREATE INDEX IF NOT EXISTS idx_v2_confidence ON daily_ai_curations_v2(confidence
 CREATE INDEX IF NOT EXISTS idx_v2_priority ON daily_ai_curations_v2(priority);
 CREATE INDEX IF NOT EXISTS idx_v2_saved_date ON daily_ai_curations_v2(saved_at DESC);
 CREATE INDEX IF NOT EXISTS idx_v2_complexity ON daily_ai_curations_v2(implementation_complexity);
+ALTER TABLE daily_ai_curations_v2 DROP CONSTRAINT IF EXISTS daily_ai_curations_v2_url_key;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_unique_url_per_day
+  ON daily_ai_curations_v2 (url, ((saved_at::date)));
 CREATE UNIQUE INDEX IF NOT EXISTS idx_v2_unique_title_per_day
   ON daily_ai_curations_v2 (title, ((saved_at::date)));
 
