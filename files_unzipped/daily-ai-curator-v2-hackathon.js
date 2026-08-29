@@ -25,6 +25,137 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
+const VALID_COMPLEXITIES = new Set(["LOW", "MEDIUM", "HIGH"]);
+const VALID_PRIORITIES = new Set(["HIGH", "MEDIUM", "LOW"]);
+
+function clampNumber(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, number));
+}
+
+function normalizeTextArray(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean);
+  }
+  if (typeof value === "string" && value.trim()) {
+    return [value.trim()];
+  }
+  return [];
+}
+
+function normalizeEnum(value, validValues, fallback) {
+  const normalized = String(value || "").trim().toUpperCase();
+  return validValues.has(normalized) ? normalized : fallback;
+}
+
+function defaultPriorityForScore(totalScore) {
+  if (totalScore >= 85) return "HIGH";
+  if (totalScore >= 80) return "MEDIUM";
+  return "LOW";
+}
+
+function normalizeAxisBreakdown(axisBreakdown = {}) {
+  return {
+    adoption_score: clampNumber(axisBreakdown.adoption_score, 0, 25, 0),
+    adoption_reason: String(axisBreakdown.adoption_reason || ""),
+    revenue_score: clampNumber(axisBreakdown.revenue_score, 0, 25, 0),
+    revenue_reason: String(axisBreakdown.revenue_reason || ""),
+    scalability_score: clampNumber(axisBreakdown.scalability_score, 0, 25, 0),
+    scalability_reason: String(axisBreakdown.scalability_reason || ""),
+    compatibility_score: clampNumber(axisBreakdown.compatibility_score, 0, 25, 0),
+    compatibility_reason: String(axisBreakdown.compatibility_reason || ""),
+  };
+}
+
+function normalizeConfidence(confidence) {
+  const numericConfidence = Number(confidence);
+  if (!Number.isFinite(numericConfidence)) return 0;
+  const decimalConfidence =
+    numericConfidence > 1 && numericConfidence <= 100
+      ? numericConfidence / 100
+      : numericConfidence;
+  return clampNumber(decimalConfidence, 0, 1, 0);
+}
+
+function normalizeScoredArticle(article) {
+  const totalScore = clampNumber(article.total_score, 0, 100, Number.NaN);
+  if (!Number.isFinite(totalScore)) {
+    return null;
+  }
+
+  return {
+    ...article,
+    axis_breakdown: normalizeAxisBreakdown(article.axis_breakdown),
+    total_score: Math.round(totalScore),
+    confidence: normalizeConfidence(article.confidence),
+    applicable_business: normalizeTextArray(article.applicable_business),
+    risk_factors: normalizeTextArray(article.risk_factors),
+    implementation_complexity: normalizeEnum(
+      article.implementation_complexity,
+      VALID_COMPLEXITIES,
+      "MEDIUM"
+    ),
+    priority: normalizeEnum(
+      article.priority,
+      VALID_PRIORITIES,
+      defaultPriorityForScore(totalScore)
+    ),
+    article_title: String(article.article_title || "Untitled article"),
+    article_url: String(article.article_url || ""),
+    category: String(article.category || "Unknown"),
+    thinking_summary: String(article.thinking_summary || ""),
+    thinking_process: String(article.thinking_process || ""),
+  };
+}
+
+function toV2Row(article, savedAt = new Date().toISOString()) {
+  return {
+    title: article.article_title,
+    url: article.article_url,
+    category: article.category,
+    total_score: article.total_score,
+    breakdown: article.axis_breakdown,
+    confidence: article.confidence,
+    applicable_business: article.applicable_business,
+    risk_factors: article.risk_factors,
+    thinking_summary: article.thinking_summary,
+    thinking_process: article.thinking_process,
+    implementation_complexity: article.implementation_complexity,
+    priority: article.priority,
+    saved_at: savedAt,
+  };
+}
+
+function toLegacyRow(article, savedAt = new Date().toISOString()) {
+  return {
+    title: article.article_title,
+    url: article.article_url,
+    category: article.category,
+    total_score: article.total_score,
+    breakdown: {
+      adoption: article.axis_breakdown.adoption_score,
+      revenue_speed: article.axis_breakdown.revenue_score,
+      scalability: article.axis_breakdown.scalability_score,
+      stack_compatibility: article.axis_breakdown.compatibility_score,
+    },
+    applicable_business: article.applicable_business,
+    priority: article.priority,
+    saved_at: savedAt,
+  };
+}
+
+function shouldFallbackToLegacy(error) {
+  const message = `${error?.code || ""} ${error?.message || ""}`.toLowerCase();
+  return (
+    message.includes("42p01") ||
+    message.includes("pgrst204") ||
+    message.includes("schema cache") ||
+    message.includes("does not exist") ||
+    message.includes("could not find the table")
+  );
+}
+
 // ============================================
 // 強化版：検索キーワード戦略 + AI最適化
 // ============================================
@@ -300,7 +431,7 @@ ${SCORING_CRITERIA}
     // 思考プロセスの要約
     const thinkingSummary = extractThinkingSummary(thinkingProcess);
 
-    return {
+    return normalizeScoredArticle({
       ...score,
       thinking_process: thinkingProcess, // 月次学習用
       thinking_summary: thinkingSummary, // 人間が読むため
@@ -308,7 +439,7 @@ ${SCORING_CRITERIA}
       article_url: article.url,
       category: article.searchQuery?.category,
       scored_at: new Date().toISOString(),
-    };
+    });
   } catch (error) {
     console.error(`Scoring error for "${article.title}":`, error);
     return null;
@@ -373,7 +504,7 @@ Return ONLY JSON array: [{"title":"...", "url":"...", "summary":"...", "source":
         ],
       });
 
-      const content = response.content[0].text;
+      const content = response.content.find((c) => c.type === "text")?.text || "[]";
       const jsonMatch = content.match(/\[[\s\S]*\]/);
       if (jsonMatch) {
         try {
@@ -411,50 +542,10 @@ Return ONLY JSON array: [{"title":"...", "url":"...", "summary":"...", "source":
     if (scoredArticles.length > 0) {
       console.log("💾 Saving to Supabase with thinking data...");
 
-      // 新しいテーブル構造：thinking データを保持
-      const { error } = await supabase
-        .from("daily_ai_curations_v2")
-        .insert(
-          scoredArticles.map((article) => ({
-            title: article.article_title,
-            url: article.article_url,
-            category: article.category,
-            total_score: article.total_score,
-            breakdown: article.axis_breakdown,
-            confidence: article.confidence,
-            applicable_business: article.applicable_business,
-            risk_factors: article.risk_factors,
-            thinking_summary: article.thinking_summary,
-            thinking_process: article.thinking_process, // 学習用
-            implementation_complexity: article.implementation_complexity,
-            priority: article.priority,
-            saved_at: new Date().toISOString(),
-          }))
-        );
-
-      if (error) {
-        console.error("Supabase error:", error);
-        // v1 テーブルにフォールバック
-        await supabase.from("daily_ai_curations").insert(
-          scoredArticles.map((article) => ({
-            title: article.article_title,
-            url: article.article_url,
-            category: article.category,
-            total_score: article.total_score,
-            breakdown: {
-              adoption: article.axis_breakdown.adoption_score,
-              revenue_speed: article.axis_breakdown.revenue_score,
-              scalability: article.axis_breakdown.scalability_score,
-              stack_compatibility: article.axis_breakdown.compatibility_score,
-            },
-            applicable_business: article.applicable_business,
-            priority: article.priority,
-            saved_at: new Date().toISOString(),
-          }))
-        );
-      } else {
-        console.log("✅ Saved to Supabase v2 (with thinking data)\n");
-      }
+      const saveResult = await saveScoredArticles(scoredArticles);
+      console.log(
+        `✅ Supabase save complete: ${saveResult.saved}/${saveResult.attempted} saved (${saveResult.fallbackSaved} legacy fallback)\n`
+      );
     }
 
     // ステップ5：LINE通知（信頼度スコア含む）
@@ -486,6 +577,10 @@ async function notifyLineWithConfidence(articles) {
     .sort((a, b) => b.total_score - a.total_score)
     .slice(0, 5);
 
+  await sendLineMessage(buildLineMessage(topArticles));
+}
+
+function buildLineMessage(topArticles) {
   let message = `📊 朝のAI情報キュレーション（${new Date().toLocaleDateString("ja-JP")}）\n\n`;
   message += `🎯 ${topArticles.length}件の高価値案件を検出\n`;
   message += `🧠 Thinking-enabled精密判定モード\n\n`;
@@ -498,7 +593,7 @@ async function notifyLineWithConfidence(articles) {
     message += `📝 ${article.article_title}\n`;
     message += `⭐ スコア: ${article.total_score}/100\n`;
     message += `${confidenceEmoji} 確信度: ${(article.confidence * 100).toFixed(0)}%\n`;
-    message += `🎯 対象: ${article.applicable_business.join("・")}\n`;
+    message += `🎯 対象: ${formatList(article.applicable_business)}\n`;
     message += `⚠️ リスク: ${article.risk_factors.length > 0 ? article.risk_factors[0] : "なし"}\n`;
     message += `💪 難度: ${article.implementation_complexity}\n`;
     message += `🔗 ${article.article_url}\n\n`;
@@ -506,7 +601,11 @@ async function notifyLineWithConfidence(articles) {
 
   message += `\n💭 詳細分析はダッシュボードで確認`;
 
-  await sendLineMessage(message);
+  return message;
+}
+
+function formatList(items) {
+  return items.length ? items.join("・") : "未指定";
 }
 
 async function sendLineMessage(message) {
@@ -581,6 +680,47 @@ function getMostCommonRisk(articles) {
   return sorted[0]?.[0] || "None identified";
 }
 
+async function saveScoredArticles(scoredArticles, db = supabase) {
+  const result = {
+    attempted: scoredArticles.length,
+    saved: 0,
+    failed: 0,
+    fallbackSaved: 0,
+  };
+
+  for (const article of scoredArticles) {
+    const savedAt = new Date().toISOString();
+    const { error } = await db.from("daily_ai_curations_v2").insert(toV2Row(article, savedAt));
+
+    if (!error) {
+      result.saved += 1;
+      continue;
+    }
+
+    console.error(`Supabase v2 error for "${article.article_title}":`, error);
+
+    if (!shouldFallbackToLegacy(error)) {
+      result.failed += 1;
+      continue;
+    }
+
+    const { error: fallbackError } = await db
+      .from("daily_ai_curations")
+      .insert(toLegacyRow(article, savedAt));
+
+    if (fallbackError) {
+      console.error(`Supabase legacy fallback error for "${article.article_title}":`, fallbackError);
+      result.failed += 1;
+      continue;
+    }
+
+    result.saved += 1;
+    result.fallbackSaved += 1;
+  }
+
+  return result;
+}
+
 // ============================================
 // 実行
 // ============================================
@@ -589,4 +729,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   runCuratorWithHackathonTechniques();
 }
 
-export { runCuratorWithHackathonTechniques };
+export {
+  buildLineMessage,
+  normalizeScoredArticle,
+  runCuratorWithHackathonTechniques,
+  saveScoredArticles,
+  toLegacyRow,
+  toV2Row,
+};
