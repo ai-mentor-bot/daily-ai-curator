@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node daily-ai-curator.js",
     "daily": "node daily-ai-curator.js",
-    "monthly": "node monthly-learning-loop.js"
+    "monthly": "node monthly-learning-loop.js",
+    "test": "node runtime-config.test.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "latest",
