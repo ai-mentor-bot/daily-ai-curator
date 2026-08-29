@@ -14,15 +14,30 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { createClient } from "@supabase/supabase-js";
 import fetch from "node-fetch";
+import { buildAnthropicRequest } from "./anthropic-config.js";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
-);
+let supabaseClient;
+
+function getSupabaseClient() {
+  if (supabaseClient) return supabaseClient;
+
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_KEY;
+
+  if (!supabaseUrl || !/^https?:\/\//i.test(supabaseUrl)) {
+    throw new Error("Invalid SUPABASE_URL: must be a valid HTTP or HTTPS URL");
+  }
+  if (!supabaseKey) {
+    throw new Error("Missing SUPABASE_KEY");
+  }
+
+  supabaseClient = createClient(supabaseUrl, supabaseKey);
+  return supabaseClient;
+}
 
 // ============================================
 // 月次学習実行
@@ -83,6 +98,7 @@ async function runMonthlyLearning() {
 // ============================================
 
 async function collectMonthlyData() {
+  const supabase = getSupabaseClient();
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
@@ -137,17 +153,14 @@ async function analyzeThinkingPatterns(monthlyData) {
   }
 
   try {
-    const response = await anthropic.messages.create({
-      model: "claude-opus-4-20250805",
-      max_tokens: 3000,
-      thinking: {
-        type: "enabled",
-        budget_tokens: 2000,
-      },
-      messages: [
-        {
-          role: "user",
-          content: `
+    const response = await anthropic.messages.create(
+      buildAnthropicRequest({
+        maxTokens: 3000,
+        thinkingBudget: 2000,
+        messages: [
+          {
+            role: "user",
+            content: `
 【思考プロセスパターン分析タスク】
 
 以下の10件のthinking プロセス（意思決定ロジック）を分析してください。
@@ -189,9 +202,10 @@ Kotaroの事業判定に最も重要な要素を特定し、
   ]
 }
 `,
-        },
-      ],
-    });
+          },
+        ],
+      })
+    );
 
     const content = response.content.find((c) => c.type === "text")?.text || "{}";
     const jsonMatch = content.match(/\{[\s\S]*\}/);
@@ -330,6 +344,7 @@ async function saveMonthlyReport(
   accuracy,
   recommendations
 ) {
+  const supabase = getSupabaseClient();
   const report = {
     month: new Date().toISOString().substring(0, 7),
     total_articles: monthlyData.articles.length,
